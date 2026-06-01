@@ -1,25 +1,35 @@
 """
-Prosple PH internship monitor -> Discord webhook.
+Prosple PH internship monitor -> Discord (bot or webhook).
 
 Polls the ph.prosple.com opportunities API for the newest internships
-("Internship, Clerkship or Placement"), posts rich embeds to a Discord
-webhook, and pings whenever a brand-new listing appears.
+("Internship, Clerkship or Placement"), posts rich embeds to Discord, and
+pings whenever a brand-new listing appears.
+
+Two delivery modes, chosen automatically:
+  * BOT     -- if DISCORD_BOT_TOKEN + DISCORD_CHANNEL_ID are set. Posts via the
+               bot API and includes real "Apply" buttons.
+  * WEBHOOK -- otherwise, posts via DISCORD_WEBHOOK_URL. Webhooks can't carry
+               buttons, so the apply action is a clickable link in the embed.
 
 On the very first run it seeds the channel with the top 10 latest
 internships (no ping), records them as "seen", and then watches for new
 ones from there on.
 
 Configuration (read from a .env file in the same folder, or env vars):
-    DISCORD_WEBHOOK_URL   (required)  the Discord webhook to post to
+    DISCORD_BOT_TOKEN     (bot mode)  bot token from the Developer Portal
+    DISCORD_CHANNEL_ID    (bot mode)  target channel id (enable Developer Mode,
+                                      right-click channel -> Copy Channel ID)
+    DISCORD_WEBHOOK_URL   (webhook)   used only if no bot token/channel is set
     DISCORD_PING          (optional)  text put in the message content for a
                                       NEW listing, e.g. "@here", "@everyone",
                                       or "<@&ROLE_ID>". Empty = no mention.
     POLL_INTERVAL_SECONDS (optional)  seconds between polls (default 300)
     INIT_COUNT            (optional)  how many to seed on first run (default 10)
     FETCH_LIMIT           (optional)  how many to pull each poll (default 30)
+    INCLUDE_DESCRIPTION   (optional)  embed the full job description (default 1)
 
 Zero third-party dependencies -- standard library only.
-Run with:  python prosple_monitor.py
+Run with:  python prosple_monitor.py   (add --once for a single cycle)
 """
 
 import gzip
@@ -353,13 +363,27 @@ def resolve_apply(opp, detail_url):
     return "Apply on Prosple ↗", detail_url
 
 
-def build_description_block(opp, detail_url, include_full_description):
-    """Build the embed description: an apply link plus a collapsible JD."""
+def build_components(opp, detail_url):
+    """Build a Discord action row of link buttons (bot mode only).
+
+    Webhooks cannot send these -- only a bot/application can.
+    """
     apply_label, apply_url = resolve_apply(opp, detail_url)
-    if apply_url == detail_url:
+    label = apply_label.replace(chr(0x2197), "").strip()[:80]
+    buttons = [{"type": 2, "style": 5, "label": label, "url": apply_url}]
+    if apply_url != detail_url:
+        buttons.append({"type": 2, "style": 5, "label": "View on Prosple", "url": detail_url})
+    return [{"type": 1, "components": buttons}]
+
+
+def build_description_block(opp, detail_url, include_full_description, include_apply_links=True):
+    """Build the embed description: optional apply link(s) plus a collapsible JD."""
+    header = ""
+    apply_label, apply_url = resolve_apply(opp, detail_url)
+    if include_apply_links and apply_url == detail_url:
         # Application goes through Prosple itself -- one link is enough.
         header = f"**[{apply_label}]({apply_url})**"
-    else:
+    elif include_apply_links:
         header = f"**[{apply_label}]({apply_url})** • [View on Prosple ↗]({detail_url})"
 
     if not include_full_description:
@@ -388,7 +412,7 @@ def build_description_block(opp, detail_url, include_full_description):
     return header + label + spoiler
 
 
-def build_embed(opp, include_full_description=True):
+def build_embed(opp, include_full_description=True, include_apply_links=True):
     """Build a Discord embed dict with all relevant internship details."""
     title = opp.get("title") or "Untitled internship"
     detail_path = opp.get("detailPageURL") or ""
@@ -434,7 +458,7 @@ def build_embed(opp, include_full_description=True):
         "footer": {"text": f"Prosple PH • ID {opp.get('id')}"},
     }
 
-    description = build_description_block(opp, url, include_full_description)
+    description = build_description_block(opp, url, include_full_description, include_apply_links).strip()
     if description:
         embed["description"] = description[:MAX_DESCRIPTION]
     if logo:
@@ -447,25 +471,17 @@ def build_embed(opp, include_full_description=True):
 
 
 # --------------------------------------------------------------------------- #
-# Discord webhook.
+# Discord delivery (bot API or webhook -- chosen automatically).
 # --------------------------------------------------------------------------- #
-def post_to_discord(webhook_url, embeds, content=None):
-    """Post up to 10 embeds in one message, handling 429 rate limits."""
-    body = {
-        "embeds": embeds[:10],
-        # Only allow the explicit mentions we put in `content`.
-        "allowed_mentions": {"parse": ["everyone", "roles"]},
-    }
-    if content:
-        body["content"] = content[:2000]
+DISCORD_API = "https://discord.com/api/v10"
 
+
+def _post_json(url, headers, body):
+    """POST one JSON message, retrying on 429 / transient network errors."""
     data = json.dumps(body).encode("utf-8")
-    request = urllib.request.Request(
-        webhook_url,
-        data=data,
-        headers={"Content-Type": "application/json", "User-Agent": "prosple-monitor"},
-        method="POST",
-    )
+    base_headers = {"Content-Type": "application/json", "User-Agent": "prosple-monitor"}
+    base_headers.update(headers)
+    request = urllib.request.Request(url, data=data, headers=base_headers, method="POST")
     for attempt in range(5):
         try:
             with urllib.request.urlopen(request, timeout=30) as response:
@@ -482,7 +498,7 @@ def post_to_discord(webhook_url, embeds, content=None):
                 log(f"Rate limited by Discord; waiting {retry_after:.1f}s.")
                 time.sleep(retry_after + 0.5)
                 continue
-            log(f"Discord webhook error {exc.code}: {exc.read().decode('utf-8', 'replace')[:300]}")
+            log(f"Discord error {exc.code}: {exc.read().decode('utf-8', 'replace')[:300]}")
             return False
         except urllib.error.URLError as exc:
             log(f"Network error posting to Discord: {exc}; retrying.")
@@ -490,9 +506,49 @@ def post_to_discord(webhook_url, embeds, content=None):
     return False
 
 
+def send_message(config, embeds, content=None, components=None):
+    """Send one message via the bot API (if configured) or the webhook."""
+    body = {
+        "embeds": embeds[:10],
+        # Only allow the explicit mentions we put in `content`.
+        "allowed_mentions": {"parse": ["everyone", "roles"]},
+    }
+    if content:
+        body["content"] = content[:2000]
+
+    if config["mode"] == "bot":
+        # Buttons are only deliverable through the bot API.
+        if components:
+            body["components"] = components
+        url = f"{DISCORD_API}/channels/{config['channel_id']}/messages"
+        headers = {"Authorization": f"Bot {config['bot_token']}"}
+        return _post_json(url, headers, body)
+
+    return _post_json(config["webhook_url"], {}, body)
+
+
 # --------------------------------------------------------------------------- #
 # Core monitor logic.
 # --------------------------------------------------------------------------- #
+def render(opp, config):
+    """Return (embed, components) for one opportunity, tailored to the mode.
+
+    In bot mode the apply action is a real button, so it's left out of the
+    embed text. In webhook mode buttons aren't possible, so the apply links
+    live inside the embed description instead.
+    """
+    bot = config["mode"] == "bot"
+    detail_path = opp.get("detailPageURL") or ""
+    detail_url = SITE_BASE + detail_path if detail_path.startswith("/") else detail_path
+    embed = build_embed(
+        opp,
+        include_full_description=config["include_description"],
+        include_apply_links=not bot,
+    )
+    components = build_components(opp, detail_url) if bot else None
+    return embed, components
+
+
 def run_once(config, state):
     """One poll cycle. Returns the (possibly updated) state."""
     opportunities = fetch_internships(config["fetch_limit"])
@@ -508,9 +564,9 @@ def run_once(config, state):
         log(f"Initialization: posting top {len(latest)} latest internships.")
         # Post oldest-first so the newest ends up at the bottom of the channel.
         for opp in reversed(latest):
-            embed = build_embed(opp, config["include_description"])
-            post_to_discord(config["webhook_url"], [embed])
-            time.sleep(1)  # be gentle with the webhook
+            embed, components = render(opp, config)
+            send_message(config, [embed], components=components)
+            time.sleep(1)  # be gentle with the service
         # ...but mark EVERY currently-listed internship as seen, so the
         # already-existing ones below the top 10 are never mistaken for "new"
         # arrivals and pinged on the next poll.
@@ -537,8 +593,8 @@ def run_once(config, state):
         content = f"🆕 **New internship** at {employer}: {title}"
         if ping:
             content = f"{ping} {content}"
-        embed = build_embed(opp, config["include_description"])
-        ok = post_to_discord(config["webhook_url"], [embed], content=content)
+        embed, components = render(opp, config)
+        ok = send_message(config, [embed], content=content, components=components)
         if ok:
             seen.add(opp["id"])
         time.sleep(1)
@@ -551,8 +607,20 @@ def run_once(config, state):
 def load_config():
     load_dotenv(os.path.join(SCRIPT_DIR, ".env"))
     webhook_url = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
-    if not webhook_url or "XXXXXXXX" in webhook_url:
-        log("ERROR: DISCORD_WEBHOOK_URL is not set. Add it to your .env file.")
+    bot_token = os.environ.get("DISCORD_BOT_TOKEN", "").strip()
+    channel_id = os.environ.get("DISCORD_CHANNEL_ID", "").strip()
+
+    # Prefer bot mode (real Apply buttons) when both token and channel are set;
+    # otherwise fall back to the webhook (clickable links instead of buttons).
+    if bot_token and channel_id:
+        mode = "bot"
+    elif webhook_url and "XXXXXXXX" not in webhook_url:
+        mode = "webhook"
+    else:
+        log(
+            "ERROR: configure either DISCORD_BOT_TOKEN + DISCORD_CHANNEL_ID "
+            "(bot mode, with buttons) or DISCORD_WEBHOOK_URL (webhook mode) in .env."
+        )
         sys.exit(1)
 
     def _int(name, default):
@@ -565,7 +633,10 @@ def load_config():
         return os.environ.get(name, str(default)).strip().lower() not in ("0", "false", "no", "off")
 
     return {
+        "mode": mode,
         "webhook_url": webhook_url,
+        "bot_token": bot_token,
+        "channel_id": channel_id,
         "ping": os.environ.get("DISCORD_PING", "").strip(),
         "poll_interval": _int("POLL_INTERVAL_SECONDS", 300),
         "init_count": _int("INIT_COUNT", 10),
@@ -585,7 +656,7 @@ def main():
         return
 
     log(
-        f"Starting Prosple PH internship monitor. "
+        f"Starting Prosple PH internship monitor in {config['mode'].upper()} mode. "
         f"Poll every {config['poll_interval']}s, "
         f"ping={'(none)' if not config['ping'] else config['ping']}."
     )

@@ -1,9 +1,16 @@
 # Prosple PH Internship Monitor
 
 Watches [ph.prosple.com](https://ph.prosple.com) for the newest **internships**
-("Internship, Clerkship or Placement") and posts them to a Discord channel via a
-webhook. On the first run it seeds the channel with the 10 latest internships,
-then it pings whenever a brand-new listing appears.
+("Internship, Clerkship or Placement") and posts them to a Discord channel.
+On the first run it seeds the channel with the 10 latest internships, then it
+pings whenever a brand-new listing appears.
+
+It works in either of two modes, picked automatically from your `.env`:
+
+- **Bot mode** (recommended) — set `DISCORD_BOT_TOKEN` + `DISCORD_CHANNEL_ID`.
+  Posts via the bot API and includes real clickable **Apply buttons**.
+- **Webhook mode** — set `DISCORD_WEBHOOK_URL`. Webhooks can't carry buttons, so
+  the apply action is a clickable link inside the embed instead.
 
 Each post is a rich embed showing all the relevant details: employer (with logo),
 opportunity type, location, work mode, salary, vacancies, start date, application
@@ -15,34 +22,51 @@ It also includes:
 - **A collapsible full job description.** Discord has no real accordion, so the
   description is placed behind a spoiler (`||…||`) — blurred until you click to
   reveal it. The original HTML is converted to clean Discord markdown.
-- **An apply link.** When Prosple exposes the employer's own application URL
-  (`applyByUrl`), the post links **straight to the company's careers site / ATS**
-  (Workday, Lever, Greenhouse, Oracle, etc.) — skipping Prosple's sign-up wall.
-  When the employer only accepts applications through Prosple, it links to the
-  Prosple page instead (there's no external URL to skip in that case).
-
-> Note: standard Discord *channel webhooks* cannot render real interactive
-> buttons (Discord strips them) — that requires a bot/application. So the apply
-> action is a prominent clickable markdown link instead.
+- **An apply button / link.** When Prosple exposes the employer's own
+  application URL (`applyByUrl`), it points **straight to the company's careers
+  site / ATS** (Workday, Lever, Greenhouse, Oracle, etc.) — skipping Prosple's
+  sign-up wall. When the employer only accepts applications through Prosple, it
+  points to the Prosple page instead (there's no external URL to skip).
+  In bot mode this is a real button; in webhook mode it's a clickable link.
 
 No third-party packages required — pure Python standard library.
 
-## Setup
+## Setup (bot mode — with Apply buttons)
 
-1. Copy `.env.example` to `.env` and fill in your Discord webhook URL:
+1. **Create the app & bot:** <https://discord.com/developers/applications> →
+   **New Application**. Open the **Bot** tab → **Reset Token** → copy the token.
+   (Keep it secret — it goes in `.env`, which is git-ignored.)
+   No privileged intents are needed; the bot only *sends* messages.
+
+2. **Invite the bot to your server:** **OAuth2 → URL Generator** → tick scope
+   `bot`, then permissions **Send Messages** and **Embed Links** (also
+   **Mention Everyone** if you want `@here`/`@everyone` pings). Open the
+   generated URL and add it to your server.
+
+3. **Get the channel id:** Discord → **User Settings → Advanced → Developer
+   Mode** (on). Right-click the target channel → **Copy Channel ID**.
+
+4. **Fill in `.env`** (copy from `.env.example`):
 
    ```
-   DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/xxxx/yyyy
-   DISCORD_PING=@here          # what to mention on a NEW listing (blank = no ping)
+   DISCORD_BOT_TOKEN=your-bot-token
+   DISCORD_CHANNEL_ID=123456789012345678
+   DISCORD_PING=@here          # what to mention on a NEW listing (blank = none)
    POLL_INTERVAL_SECONDS=300   # how often to check (default 5 min)
    INIT_COUNT=10               # how many to seed on first run
    FETCH_LIMIT=30              # how many to pull each poll
    INCLUDE_DESCRIPTION=true    # embed the full job description (spoiler)
    ```
 
-   To ping a specific role instead of `@here`, use `DISCORD_PING=<@&ROLE_ID>`.
+5. Run it.
 
-2. Run it.
+## Setup (webhook mode — links instead of buttons)
+
+Leave `DISCORD_BOT_TOKEN` / `DISCORD_CHANNEL_ID` blank and set
+`DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/xxxx/yyyy` (Channel
+Settings → Integrations → Webhooks). Everything else is the same.
+
+To ping a specific role instead of `@here`, use `DISCORD_PING=<@&ROLE_ID>`.
 
 ## Running
 
