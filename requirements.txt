@@ -1,0 +1,3 @@
+# Only needed for the interactive bot (prosple_bot.py).
+# prosple_monitor.py (webhook/links version) needs nothing extra.
+discord.py>=2.4
