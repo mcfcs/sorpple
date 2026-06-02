@@ -7,3 +7,4 @@ __pycache__/
 *.pyc
 proxies.txt
 indeed_state.json
+jobstreet_state.json
