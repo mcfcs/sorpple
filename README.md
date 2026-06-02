@@ -32,7 +32,7 @@ extracts job data from the `window.mosaic.providerData["mosaic-provider-jobcards
 JSON blob embedded in the page. Job descriptions are fetched by reloading the
 same search URL with `?vjk={jobKey}` so Indeed renders the full detail panel
 server-side — avoiding the separately Cloudflare-protected `/viewjob` endpoint.
-**Proxies are strongly recommended** (proxies.txt, Wolveproxy format).
+**Proxies are strongly recommended** due to Cloudflare bot protection.
 
 ### JobStreet
 Fetches `ph.jobstreet.com/%22intern%22-jobs/in-Philippines?sortmode=ListedDate`
@@ -100,7 +100,7 @@ FETCH_LIMIT=30                      # listings to pull each poll
 INCLUDE_DESCRIPTION=true            # include full JD spoiler (monitor only)
 
 # Indeed — proxies strongly recommended
-INDEED_PROXIES_FILE=proxies.txt     # Wolveproxy format (host:port:user:pass)
+INDEED_PROXIES_FILE=proxies.txt     # proxy list (host:port:user:pass, one per line)
 INDEED_USE_PROXIES=true             # set false to disable
 
 # JobStreet — no proxies needed
@@ -119,7 +119,24 @@ python -m pip install -r requirements.txt   # installs discord.py (bot scripts o
 
 ## Running Sorpple
 
-Run all three bots together (one terminal each, or as background services):
+The recommended way is `sorpple.py` — a single process that runs all three
+sources as one Discord gateway connection:
+
+```powershell
+python sorpple.py
+```
+
+Test all three sources and their buttons at once:
+
+```powershell
+python sorpple.py --sample   # posts one listing from each source then idles
+```
+
+Click the 📋 button on any card — the description appears only to you (ephemeral).
+
+### Running sources individually
+
+Each bot can also run standalone if needed:
 
 ```powershell
 python prosple_bot.py
@@ -127,24 +144,7 @@ python indeed_bot.py
 python jobstreet_bot.py
 ```
 
-Each bot logs in, polls on its configured interval, and stays connected so the
-**📋 Job Description** buttons keep working across restarts.
-
-Test buttons without waiting for a new listing:
-
-```powershell
-python prosple_bot.py --sample
-python indeed_bot.py --sample
-python jobstreet_bot.py --sample
-```
-
-Each `--sample` command posts one listing immediately, then idles. Click the
-📋 button — the description appears only to you (ephemeral).
-
-### Running the zero-dependency monitors instead
-
-Each monitor auto-detects mode from `.env`: bot (token + channel set) or webhook
-(`DISCORD_WEBHOOK_URL`). Supports `--once` for Task Scheduler / cron:
+Or as one-shot monitor cycles (no `discord.py` required):
 
 ```powershell
 python prosple_monitor.py --once
@@ -165,7 +165,7 @@ Each source tracks its own seen listings independently:
 | `jobstreet_state.json` | JobStreet |
 
 All three are git-ignored and auto-created on first run. To re-seed a source
-from scratch, delete its state file and run again.
+from scratch, delete its state file and restart.
 
 ---
 
@@ -173,6 +173,7 @@ from scratch, delete its state file and run again.
 
 ```
 sorpple/
+├── sorpple.py            # Unified bot — runs all three sources (recommended)
 ├── prosple_bot.py        # Prosple — interactive bot (buttons)
 ├── prosple_monitor.py    # Prosple — zero-dependency monitor (webhook or bot)
 ├── indeed_bot.py         # Indeed  — interactive bot (buttons)
@@ -182,7 +183,7 @@ sorpple/
 ├── requirements.txt      # discord.py (bot scripts only)
 ├── .env.example          # configuration template
 ├── .env                  # your config (git-ignored)
-├── proxies.txt           # Wolveproxy list for Indeed (git-ignored)
+├── proxies.txt           # proxy list for Indeed (git-ignored)
 ├── state.json            # Prosple seen-listings (auto-created, git-ignored)
 ├── indeed_state.json     # Indeed seen-listings (auto-created, git-ignored)
 └── jobstreet_state.json  # JobStreet seen-listings (auto-created, git-ignored)
