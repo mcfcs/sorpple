@@ -22,6 +22,7 @@ polling interval -- new listings rarely exceed 15 per poll.
 
 import gzip
 import html
+import http.cookiejar
 import json
 import os
 import random
@@ -84,6 +85,12 @@ _MOSAIC_KEY_RE = re.compile(
 )
 
 DISCORD_API = "https://discord.com/api/v10"
+
+# Shared cookie jar: cookies set by the search page (Indeed session tokens,
+# Cloudflare clearance) are reused automatically on subsequent requests such
+# as viewjob description fetches.
+_COOKIE_JAR = http.cookiejar.CookieJar()
+
 
 
 # --------------------------------------------------------------------------- #
@@ -167,14 +174,20 @@ def load_proxies(path):
 # --------------------------------------------------------------------------- #
 # HTTP fetch (proxy-aware, gzip-transparent).
 # --------------------------------------------------------------------------- #
-def _http_get(url, proxy_url=None):
-    """GET a URL and return decoded HTML.  Handles gzip decompression."""
+def _http_get(url, proxy_url=None, headers=None):
+    """GET a URL and return decoded HTML.
+
+    Uses the shared _COOKIE_JAR so session cookies (Cloudflare clearance, Indeed
+    session tokens) flow from the search page through to subsequent viewjob fetches.
+    Pass `headers` to override REQUEST_HEADERS (e.g. for viewjob navigation).
+    """
+    handlers = [urllib.request.HTTPCookieProcessor(_COOKIE_JAR)]
     if proxy_url:
-        handler = urllib.request.ProxyHandler({"http": proxy_url, "https": proxy_url})
+        handlers.append(urllib.request.ProxyHandler({"http": proxy_url, "https": proxy_url}))
     else:
-        handler = urllib.request.ProxyHandler({})   # explicitly no proxy
-    opener = urllib.request.build_opener(handler)
-    req = urllib.request.Request(url, headers=REQUEST_HEADERS)
+        handlers.append(urllib.request.ProxyHandler({}))
+    opener = urllib.request.build_opener(*handlers)
+    req = urllib.request.Request(url, headers=headers or REQUEST_HEADERS)
     with opener.open(req, timeout=30) as resp:
         raw = resp.read()
         if resp.headers.get("Content-Encoding") == "gzip":
@@ -292,19 +305,23 @@ def fetch_description(jk, proxies=None):
     """
     Fetch the full job description HTML for one Indeed listing.
 
-    Fetches the viewjob page and tries several extraction strategies in order:
-      1. <div id="jobDescriptionText"> — the canonical description container
-      2. <div class="jobsearch-jobDescriptionText"> — alternate class name
-      3. Embedded Mosaic JSON blobs — provider data that may carry the description
+    Instead of hitting /viewjob (which Indeed protects more aggressively with
+    Cloudflare), we add vjk={jk} to the normal search URL.  Indeed renders the
+    selected job's right-hand detail panel server-side in the same response,
+    using the same endpoint that already works for fetch_jobs().
+
+    Tries extraction in order:
+      1. <div id="jobDescriptionText">
+      2. <div class="jobsearch-jobDescriptionText">
+      3. Any Mosaic provider JSON blob that carries a description field
 
     Returns the raw HTML string, or None if unavailable.  Never raises.
     """
     try:
         proxy_url = random.choice(proxies) if proxies else None
-        url = f"{SITE_BASE}/viewjob?jk={jk}"
+        url = SEARCH_URL + "?" + urllib.parse.urlencode({**SEARCH_QUERY, "vjk": jk})
         page = _http_get(url, proxy_url=proxy_url)
 
-        # Strategy 1 & 2: well-known div targets.
         desc = _extract_div_content(page, r'<div\b[^>]*\bid=["\']jobDescriptionText["\']')
         if desc:
             return desc
@@ -315,7 +332,6 @@ def fetch_description(jk, proxies=None):
         if desc:
             return desc
 
-        # Strategy 3: scan all Mosaic provider blobs for a description field.
         for m in _MOSAIC_KEY_RE.finditer(page):
             try:
                 data, _ = json.JSONDecoder().raw_decode(page, m.end())

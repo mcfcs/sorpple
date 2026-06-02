@@ -107,7 +107,10 @@ def build_view(job: dict) -> discord.ui.View:
 
     view = discord.ui.View(timeout=None)
 
-    if apply_url != job_url:
+    # Discord enforces a 512-character limit on button URLs.
+    # Long ATS URLs (tracking params, etc.) are silently dropped; users can
+    # still apply via the "View on Indeed" page.
+    if apply_url != job_url and len(apply_url) <= 512:
         view.add_item(
             discord.ui.Button(
                 style=discord.ButtonStyle.link,
