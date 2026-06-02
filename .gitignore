@@ -5,3 +5,5 @@ state.json
 monitor.log
 __pycache__/
 *.pyc
+proxies.txt
+indeed_state.json
