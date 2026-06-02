@@ -287,13 +287,44 @@ def fetch_jobs(limit, proxies=None):
     return jobs[:limit]
 
 
+def _extract_div_content(html_text, start_re):
+    """
+    Extract the inner HTML of the first <div> whose opening tag matches start_re.
+    Uses bracket counting to handle arbitrarily nested divs.
+    """
+    m = re.search(start_re, html_text, re.I)
+    if not m:
+        return None
+    tag_end = html_text.find(">", m.start())
+    if tag_end == -1:
+        return None
+    pos = tag_end + 1
+    inner_start = pos
+    depth = 1
+    while pos < len(html_text) and depth > 0:
+        o = html_text.find("<div", pos)
+        c = html_text.find("</div", pos)
+        if c == -1:
+            break
+        if o != -1 and o < c:
+            depth += 1
+            pos = o + 4
+        else:
+            depth -= 1
+            if depth == 0:
+                return html_text[inner_start:c].strip()
+            pos = c + 6
+    return None
+
+
 def fetch_description(jid, proxies=None):
     """
     Fetch the full job description HTML for one JobStreet listing.
 
-    Fetches the job detail page (/job/{id}) and extracts the description from
-    window.SEEK_REDUX_DATA.jobdetails.result — the same Redux pattern used on
-    the search page, populated with full job data on the detail page.
+    Tries three strategies in order:
+      1. SEEK_REDUX_DATA.jobdetails.result — Redux state on the detail page
+      2. <div data-automation="jobDescription"> — SEEK's stable automation attribute
+      3. <div data-automation="jobAdDetails"> — alternate SEEK attribute
 
     Returns the raw HTML string, or None if unavailable.  Never raises.
     """
@@ -302,6 +333,7 @@ def fetch_description(jid, proxies=None):
         url = f"{SITE_BASE}/job/{jid}"
         page = _http_get(url, proxy_url=proxy_url, headers=_DETAIL_HEADERS)
 
+        # Strategy 1: Redux state (populated with full job data on the detail page).
         redux = _extract_redux(page)
         if redux:
             result = (redux.get("jobdetails") or {}).get("result") or {}
@@ -310,6 +342,16 @@ def fetch_description(jid, proxies=None):
                 or result.get("description")
                 or (result.get("details") or {}).get("jobDescription")
             )
+            if desc:
+                return desc
+
+        # Strategy 2 & 3: SEEK uses data-automation attributes throughout their
+        # platform; these are more stable than class names.
+        for pattern in (
+            r'<div\b[^>]*\bdata-automation=["\']jobDescription["\']',
+            r'<div\b[^>]*\bdata-automation=["\']jobAdDetails["\']',
+        ):
+            desc = _extract_div_content(page, pattern)
             if desc:
                 return desc
 
