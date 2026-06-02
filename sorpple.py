@@ -23,11 +23,11 @@ from prosple_monitor import (
     build_embed as prosple_build_embed,
     fetch_internships,
     load_dotenv,
-    load_proxies,
     load_state as prosple_load_state,
     log,
     save_state as prosple_save_state,
 )
+from indeed_monitor import load_proxies
 from indeed_monitor import (
     build_embed as indeed_build_embed,
     fetch_jobs as indeed_fetch_jobs,
