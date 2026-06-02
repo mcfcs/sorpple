@@ -98,19 +98,19 @@ def build_view(job: dict) -> discord.ui.View:
     """Build the action row for one Indeed listing.
 
     Buttons:
-      • Apply on company site (link) — only when a third-party ATS URL exists
-      • View on Indeed (link)         — always present
+      • Apply on company site (link) + View on Indeed (link)
+            — when a third-party ATS URL exists and is within Discord's 512-char limit
+      • Apply on Indeed (link)
+            — when no external URL, or the URL exceeds 512 chars
       • 📋 Job Description (ephemeral) — always present
     """
     job_url   = job["job_url"]
     apply_url = job["apply_url"]
+    has_external = apply_url != job_url and len(apply_url) <= 512
 
     view = discord.ui.View(timeout=None)
 
-    # Discord enforces a 512-character limit on button URLs.
-    # Long ATS URLs (tracking params, etc.) are silently dropped; users can
-    # still apply via the "View on Indeed" page.
-    if apply_url != job_url and len(apply_url) <= 512:
+    if has_external:
         view.add_item(
             discord.ui.Button(
                 style=discord.ButtonStyle.link,
@@ -118,14 +118,21 @@ def build_view(job: dict) -> discord.ui.View:
                 url=apply_url,
             )
         )
-
-    view.add_item(
-        discord.ui.Button(
-            style=discord.ButtonStyle.link,
-            label="View on Indeed",
-            url=job_url,
+        view.add_item(
+            discord.ui.Button(
+                style=discord.ButtonStyle.link,
+                label="View on Indeed",
+                url=job_url,
+            )
         )
-    )
+    else:
+        view.add_item(
+            discord.ui.Button(
+                style=discord.ButtonStyle.link,
+                label="Apply on Indeed",
+                url=job_url,
+            )
+        )
 
     view.add_item(JobDescriptionButton(job["id"]))
     return view
