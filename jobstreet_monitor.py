@@ -552,15 +552,11 @@ def load_config():
         os.path.join(SCRIPT_DIR, "proxies.txt"),
     )
     use_proxies = os.environ.get("JOBSTREET_USE_PROXIES", "").strip().lower()
-    if use_proxies in ("0", "false", "no", "off"):
-        proxies = []
-        log("Proxies disabled via JOBSTREET_USE_PROXIES.")
-    else:
+    if use_proxies in ("1", "true", "yes", "on"):
         proxies = load_proxies(proxies_file)
-        if proxies:
-            log(f"Loaded {len(proxies)} proxies from {os.path.basename(proxies_file)}.")
-        else:
-            log("No proxy file found; making direct requests.")
+        log(f"Loaded {len(proxies)} proxies from {os.path.basename(proxies_file)}.")
+    else:
+        proxies = []
 
     return {
         "mode":          mode,
