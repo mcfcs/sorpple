@@ -79,6 +79,9 @@ REQUEST_HEADERS = {
 _JOBCARDS_RE = re.compile(
     r'window\.mosaic\.providerData\["mosaic-provider-jobcards"\]\s*=\s*'
 )
+_MOSAIC_KEY_RE = re.compile(
+    r'window\.mosaic\.providerData\["(?P<key>[^"]+)"\]\s*=\s*'
+)
 
 DISCORD_API = "https://discord.com/api/v10"
 
@@ -254,6 +257,85 @@ def _normalize(raw):
     }
 
 
+def _extract_div_content(html_text, id_or_class_re):
+    """
+    Extract the inner HTML of the first <div> whose opening tag matches
+    id_or_class_re.  Uses bracket counting to handle arbitrarily nested divs.
+    """
+    m = re.search(id_or_class_re, html_text, re.I)
+    if not m:
+        return None
+    # Advance to the closing ">" of the opening tag.
+    tag_end = html_text.find(">", m.start())
+    if tag_end == -1:
+        return None
+    pos = tag_end + 1
+    inner_start = pos
+    depth = 1
+    while pos < len(html_text) and depth > 0:
+        o = html_text.find("<div", pos)
+        c = html_text.find("</div", pos)
+        if c == -1:
+            break
+        if o != -1 and o < c:
+            depth += 1
+            pos = o + 4
+        else:
+            depth -= 1
+            if depth == 0:
+                return html_text[inner_start:c].strip()
+            pos = c + 6
+    return None
+
+
+def fetch_description(jk, proxies=None):
+    """
+    Fetch the full job description HTML for one Indeed listing.
+
+    Fetches the viewjob page and tries several extraction strategies in order:
+      1. <div id="jobDescriptionText"> — the canonical description container
+      2. <div class="jobsearch-jobDescriptionText"> — alternate class name
+      3. Embedded Mosaic JSON blobs — provider data that may carry the description
+
+    Returns the raw HTML string, or None if unavailable.  Never raises.
+    """
+    try:
+        proxy_url = random.choice(proxies) if proxies else None
+        url = f"{SITE_BASE}/viewjob?jk={jk}"
+        page = _http_get(url, proxy_url=proxy_url)
+
+        # Strategy 1 & 2: well-known div targets.
+        desc = _extract_div_content(page, r'<div\b[^>]*\bid=["\']jobDescriptionText["\']')
+        if desc:
+            return desc
+        desc = _extract_div_content(
+            page,
+            r'<div\b[^>]*\bclass=["\'][^"\']*jobsearch-jobDescriptionText[^"\']*["\']',
+        )
+        if desc:
+            return desc
+
+        # Strategy 3: scan all Mosaic provider blobs for a description field.
+        for m in _MOSAIC_KEY_RE.finditer(page):
+            try:
+                data, _ = json.JSONDecoder().raw_decode(page, m.end())
+            except json.JSONDecodeError:
+                continue
+            desc = (
+                (data.get("jobInfoWrapperModel") or {})
+                .get("jobInfoModel", {})
+                .get("jobDescription")
+                or data.get("jobDescription")
+            )
+            if desc:
+                return desc
+
+        return None
+    except Exception as exc:  # noqa: BLE001 — missing JD should not block posting
+        log(f"Could not fetch description for {jk}: {exc}")
+        return None
+
+
 def fetch_jobs(limit, proxies=None):
     """
     Scrape the Indeed PH intern search page and return normalized job dicts.
@@ -337,8 +419,14 @@ def _format_posted(job):
     return job.get("date_str") or None
 
 
-def build_embed(job):
-    """Return a Discord embed dict for one Indeed listing."""
+def build_embed(job, include_snippet=True, include_apply_links=True):
+    """Return a Discord embed dict for one Indeed listing.
+
+    include_snippet      — embed the short search-result snippet in the description.
+                           Set False in bot mode (the 📋 button shows the full JD instead).
+    include_apply_links  — put apply / view links in the description text.
+                           Set False in bot mode (real link buttons carry those instead).
+    """
     job_url   = job["job_url"]
     apply_url = job["apply_url"]
 
@@ -356,28 +444,28 @@ def build_embed(job):
     if posted:
         add("📅 Posted", posted)
 
-    snippet = html_to_markdown(job.get("snippet_html", ""))
+    parts = []
 
-    # Apply / view links always live in the description (Indeed has no standalone
-    # external-apply modal like Prosple, so both links are always useful).
-    if apply_url != job_url:
-        link_line = f"**[Apply ↗]({apply_url})** • [View on Indeed ↗]({job_url})"
-    else:
-        link_line = f"**[View / Apply ↗]({job_url})**"
+    if include_apply_links:
+        if apply_url != job_url:
+            parts.append(f"**[Apply ↗]({apply_url})** • [View on Indeed ↗]({job_url})")
+        else:
+            parts.append(f"**[View / Apply ↗]({job_url})**")
 
-    description = link_line
-    if snippet:
-        description += f"\n\n{snippet}"
-    description = description[:MAX_DESCRIPTION]
+    if include_snippet:
+        snippet = html_to_markdown(job.get("snippet_html", ""))
+        if snippet:
+            parts.append(snippet)
 
     embed = {
-        "title":       job["title"][:256],
-        "url":         job_url,
-        "color":       EMBED_COLOR,
-        "description": description,
-        "fields":      fields,
-        "footer":      {"text": f"Indeed PH • {job['id']}"},
+        "title":  job["title"][:256],
+        "url":    job_url,
+        "color":  EMBED_COLOR,
+        "fields": fields,
+        "footer": {"text": f"Indeed PH • {job['id']}"},
     }
+    if parts:
+        embed["description"] = "\n\n".join(parts)[:MAX_DESCRIPTION]
     if job.get("logo_url"):
         embed["thumbnail"] = {"url": job["logo_url"]}
 
