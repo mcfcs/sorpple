@@ -135,7 +135,7 @@ class SorppleBot(discord.Client):
 
     # ── Prosple polling ───────────────────────────────────────────────────────
 
-    @tasks.loop(seconds=300)
+    @tasks.loop(seconds=1800)
     async def prosple_poller(self):
         try:
             await self._poll_prosple()
