@@ -15,7 +15,7 @@ page and shows it as an ephemeral message -- visible only to the person who
 clicked it.  The button keeps working across bot restarts (discord.py DynamicItem
 reconstructs it from the job key baked into the custom_id).
 
-Requires: discord.py >= 2.4   (pip install -U discord.py)
+Requires: discord.py >= 2.4   (pip install -U discord.py ) 
 
 Config (.env): DISCORD_BOT_TOKEN, DISCORD_CHANNEL_ID, plus the optional
 DISCORD_PING / POLL_INTERVAL_SECONDS / INIT_COUNT / FETCH_LIMIT /
