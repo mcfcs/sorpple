@@ -50,10 +50,23 @@ from datetime import datetime, timezone
 API_URL = "https://prosple-gw.global.ssl.fastly.net/internal"
 OPERATION_NAME = "OpportunitiesSearchWithoutStudyFieldFacetsModernLocations"
 # Apollo persisted-query hash for the search operation above.
-PERSISTED_QUERY_HASH = "a03a1f6f78c9c21b31fc9267b848da624d896d59c276968a7566f54502356eb9"
+PERSISTED_QUERY_HASH = "a5c386e9d954f71f4e59a31bebf8ccd4fe47cec501801142efe9cc10d44ff559"
 # Persisted query that returns the full job description (overview.fullText).
-SUPP_OPERATION_NAME = "GetOpportunitySupplementaryDetails"
-SUPP_QUERY_HASH = "e0cb808407d3da96af5da6a53bc307a954f675a2c827a7b829ab355d31355558"
+SUPP_OPERATION_NAME = "GetOpportunitySearchJobDetails"
+SUPP_QUERY_HASH = "45d02cec209f76c33696e16c086c63149a951c8dbfd641e95a3af3850bb03122"
+#
+# NOTE: these hashes identify the *query document* registered on Prosple's Apollo
+# gateway, and they rotate whenever Prosple redeploys their front end.  When the
+# API starts answering with {"code": "PERSISTED_QUERY_NOT_FOUND"}, both calls stop
+# working and need to be refreshed:
+#   1. Open ph.prosple.com in Chrome with DevTools > Network recording.
+#   2. Search for internships, then open one listing (that fires both operations).
+#   3. Save the capture as a .har and read the operationName + extensions.
+#      persistedQuery.sha256Hash out of the prosple-gw.global.ssl.fastly.net rows.
+# The `variables` we send are independent of the hash, so they normally survive a
+# rotation untouched -- only the two constants above need replacing.
+# Last refreshed: 2026-08-23 (previous search hash a03a1f6f..., detail hash
+# e0cb8084.. under the older name GetOpportunitySupplementaryDetails).
 # Opportunity-type facet id for "Internship, Clerkship or Placement".
 INTERNSHIP_TYPE_ID = "2"
 SITE_BASE = "https://ph.prosple.com"
