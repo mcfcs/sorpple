@@ -306,6 +306,7 @@ start-sorpple-web.bat                 # starts the bot and the dashboard
 start-sorpple-web.bat --no-bot        # dashboard only
 start-sorpple-web.bat --port 8080     # a different port
 start-sorpple-web.bat --rebuild       # force a fresh front-end build
+start-sorpple-web.bat --force         # also free the port from a non-Sorpple app
 ```
 
 It builds the front end on first run, starts `sorpple.py` if it isn't already
@@ -328,7 +329,13 @@ than letting you flip a switch that cannot take effect. Anything queued while it
 was down is discarded when it starts, so old clicks never override your saved
 settings.
 
+If the port is already in use, the launcher frees it. Only a previous Sorpple
+dashboard is stopped automatically — anything else listening there needs
+`--force`.
+
 ### What it does
+
+Four tabs.
 
 **Control** — a global monitor switch, plus per source: an on/off toggle, the
 poll interval, "poll now", a live countdown to the next run, and the last error.
@@ -351,6 +358,24 @@ is classified by what its board actually tells us:
 Only Prosple publishes closing dates and an expiry flag. SEEK and Indeed drop
 expired ads from their feeds instead, so their listings never claim a deadline
 they don't have.
+
+Each card shows two clocks, because they answer different questions: when the
+board posted the listing, and when Sorpple first saw it. Click any listing to
+read its **full job description** in a side panel — the same text the 📋 button
+posts in Discord. Descriptions are fetched from the board the first time a
+listing is opened and cached afterwards, so only listings you actually read cost
+a request, and re-opening one is free.
+
+**Console** — the bot's log as it runs, so you can watch a poll cycle from any
+device instead of from the terminal Sorpple was started in. Lines are tinted by
+source and by severity, and the view follows the newest line until you scroll up.
+
+**Proxies** — browse and edit `proxies.txt`, the paid list Indeed reaches
+Cloudflare through. Search by host, port or user; credentials stay masked until
+you ask for them; "Copy all" puts the whole file on your clipboard. Editing
+validates every line as `host:port:user:password` before writing, so a bad paste
+cannot silently drop Indeed to direct requests. The bot loads proxies at startup,
+so a change takes effect on its next restart.
 
 ### The listing archive
 
@@ -391,6 +416,11 @@ settings it has just loaded.
 |--------|------|------|
 | `GET` | `/api/status` | — |
 | `GET` | `/api/listings` | — |
+| `GET` | `/api/description/<source>/<id>` | — |
+| `GET` | `/api/log?since=<offset>` | — |
+| `GET` | `/api/proxies?offset=&limit=&q=` | — (`?raw=1` for the whole file) |
+| `POST` | `/api/proxies` | `{"text": "host:port:user:pass
+…"}` |
 | `POST` | `/api/interval` | `{"source": "indeed", "value": 30}` |
 | `POST` | `/api/pause` · `/api/resume` | `{"source": "prosple"}` |
 | `POST` | `/api/monitor` | `{"value": false}` — all sources at once |
@@ -441,7 +471,8 @@ sorpple/
 ├── indeed_state.json     # Indeed seen-listings (auto-created, git-ignored)
 ├── jobstreet_state.json  # JobStreet seen-listings (auto-created, git-ignored)
 ├── sorpple_settings.json # Intervals / paused flags set via slash commands
-├── listings.json         # Listing archive for the dashboard (git-ignored)
+├── listings.json         # Listing archive + cached descriptions (git-ignored)
+├── sorpple.log           # Rolling log the Console tab tails (git-ignored)
 ├── sorpple_control.json  # Queued dashboard actions (git-ignored, transient)
 └── sorpple_status.json   # Bot telemetry heartbeat (git-ignored, transient)
 ```
