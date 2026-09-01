@@ -14,5 +14,6 @@ sorpple_settings.json
 listings.json
 sorpple_control.json
 sorpple_status.json
+sorpple.log
 web/node_modules/
 web/dist/
