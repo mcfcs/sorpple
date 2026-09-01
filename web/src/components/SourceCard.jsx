@@ -9,7 +9,19 @@ import { useEffect, useState } from 'react'
 import { INDEED_CHEAP_MINUTES, MAX_MINUTES, MIN_MINUTES, SOURCE_META } from '../api'
 import { Button, HUE, Pill, Switch, countdown, since } from './primitives'
 
-export default function SourceCard({ source, now, busy, onToggle, onInterval, onPoll }) {
+export default function SourceCard({
+  source,
+  now,
+  busy,
+  online,
+  onToggle,
+  onInterval,
+  onPoll,
+}) {
+  // Every control here needs the bot to carry it out, so with Sorpple stopped
+  // they are disabled rather than queueing an action nothing will apply.
+  const locked = busy || !online
+  const lockedReason = online ? undefined : 'Start Sorpple to use this'
   const hue = HUE[source.key]
   const meta = SOURCE_META[source.key]
   const [draft, setDraft] = useState(String(source.minutes))
@@ -55,7 +67,8 @@ export default function SourceCard({ source, now, busy, onToggle, onInterval, on
 
         <Switch
           checked={source.running}
-          disabled={busy}
+          disabled={locked}
+          title={lockedReason}
           hue={source.key}
           onChange={(on) => onToggle(source.key, on)}
         />
@@ -114,7 +127,8 @@ export default function SourceCard({ source, now, busy, onToggle, onInterval, on
               min={MIN_MINUTES}
               max={MAX_MINUTES}
               value={draft}
-              disabled={busy}
+              disabled={locked}
+              title={lockedReason}
               onChange={(event) => setDraft(event.target.value)}
               onBlur={commit}
               onKeyDown={(event) => {
@@ -127,14 +141,19 @@ export default function SourceCard({ source, now, busy, onToggle, onInterval, on
             />
             <span className="text-tiny text-paper-faint">minutes</span>
             {changed ? (
-              <Button size="sm" variant="quiet" onClick={commit} disabled={busy}>
+              <Button size="sm" variant="quiet" onClick={commit} disabled={locked}>
                 Apply
               </Button>
             ) : null}
           </div>
         </div>
 
-        <Button size="sm" onClick={() => onPoll(source.key)} disabled={busy}>
+        <Button
+          size="sm"
+          onClick={() => onPoll(source.key)}
+          disabled={locked}
+          title={lockedReason}
+        >
           Poll now
         </Button>
       </div>

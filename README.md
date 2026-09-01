@@ -302,11 +302,14 @@ A React + Tailwind dashboard for controlling the monitor and browsing everything
 it has found, served over your tailnet.
 
 ```powershell
-start-sorpple-web.bat                 # builds the front end on first run, then serves it
-start-sorpple-web.bat --with-bot      # also starts sorpple.py in its own window
+start-sorpple-web.bat                 # starts the bot and the dashboard
+start-sorpple-web.bat --no-bot        # dashboard only
 start-sorpple-web.bat --port 8080     # a different port
 start-sorpple-web.bat --rebuild       # force a fresh front-end build
 ```
+
+It builds the front end on first run, starts `sorpple.py` if it isn't already
+running, then serves the dashboard.
 
 It prints both addresses on start:
 
@@ -315,8 +318,15 @@ Local      http://localhost:7331
 Tailnet    http://your-machine.tailnet.ts.net:7331
 ```
 
-The bot is **not** started by default — if `sorpple.py` is already running,
-a second instance would post every listing to Discord twice.
+**The bot is started too**, because every control on the dashboard needs it —
+the page only tells the bot what to do, it does not poll anything itself. An
+already-running bot is detected and left alone, so this never double-posts to
+Discord.
+
+With Sorpple stopped, the dashboard says so and **disables the controls** rather
+than letting you flip a switch that cannot take effect. Anything queued while it
+was down is discarded when it starts, so old clicks never override your saved
+settings.
 
 ### What it does
 
@@ -371,8 +381,9 @@ posting down with it. The two talk through two small files:
 | `sorpple_status.json` | bot → dashboard | live telemetry heartbeat |
 
 `sorpple.py` drains the queue every 2 seconds, so a click takes effect within
-about that long. With the bot stopped, the dashboard says so and queues your
-actions until it starts.
+about that long. At startup it empties the queue without applying it: clicks
+made against a stopped bot are stale, and replaying them would fight the saved
+settings it has just loaded.
 
 ### Endpoints
 

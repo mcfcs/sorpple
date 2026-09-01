@@ -182,9 +182,12 @@ export default function App() {
 
             <div className="flex items-center gap-2.5 border-l border-ink-600 pl-4">
               <Eyebrow>Monitor</Eyebrow>
+              {/* Offline, this cannot do anything: the bot is what applies it.
+                  Disabling says so instead of flipping and silently queueing. */}
               <Switch
                 checked={anyRunning}
-                disabled={busy || !status}
+                disabled={busy || !status || !online}
+                title={online ? undefined : 'Start Sorpple to use the monitor switch'}
                 onChange={handleMonitor}
               />
             </div>
@@ -196,12 +199,24 @@ export default function App() {
         {/* Offline is the one condition worth interrupting for: every control
             still works, but nothing takes effect until the bot is back. */}
         {status && !online ? (
-          <div className="panel mb-5 border-soon/30 bg-soon/5 p-4">
-            <p className="text-sm text-soon">Sorpple isn&apos;t running.</p>
-            <p className="mt-1 text-tiny leading-relaxed text-paper-dim">
-              Intervals and pause flags below are the saved settings. Changes are
-              queued and apply the moment you start it with{' '}
-              <code className="rounded bg-ink-700 px-1.5 py-0.5 font-mono">python sorpple.py</code>.
+          <div className="panel mb-5 border-halt/40 bg-halt/5 p-4">
+            <p className="font-display text-sm font-semibold text-halt">
+              Sorpple isn&apos;t running, so the controls are switched off.
+            </p>
+            <p className="mt-1.5 text-tiny leading-relaxed text-paper-dim">
+              The bot is what polls the job boards — this page only tells it what
+              to do. Start it and the controls come back on their own:
+            </p>
+            <p className="mt-2.5">
+              <code className="rounded bg-ink-700 px-2 py-1 font-mono text-tiny text-paper">
+                python sorpple.py
+              </code>
+              <span className="ml-2.5 text-tiny text-paper-faint">
+                or run start-sorpple-web.bat, which starts both.
+              </span>
+            </p>
+            <p className="mt-2.5 text-tiny text-paper-faint">
+              The intervals below are your saved settings, not live values.
             </p>
           </div>
         ) : null}
@@ -262,6 +277,7 @@ export default function App() {
                     source={source}
                     now={now}
                     busy={busy}
+                    online={online}
                     onToggle={handleToggle}
                     onInterval={handleInterval}
                     onPoll={handlePoll}

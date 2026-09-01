@@ -213,9 +213,11 @@ class Handler(BaseHTTPRequestHandler):
         return self._send_json({
             "queued": entry,
             "online": online,
-            # The bot applies queued actions on its next tick, so the caller knows
-            # to re-read status shortly rather than expecting an immediate change.
-            "note":   None if online else "Sorpple is not running; this will apply when it starts.",
+            # Queued actions expire, so an offline caller is told the action will
+            # not happen rather than being promised it applies "when it starts".
+            "note":   None if online else
+                      "Sorpple is not running, so this had no effect. "
+                      "Start it with: python sorpple.py",
         })
 
     # ── Static files ──────────────────────────────────────────────────────────
@@ -321,6 +323,10 @@ def main():
         "--print-url", action="store_true",
         help="print this machine's tailnet URL and exit (used by the launcher)",
     )
+    parser.add_argument(
+        "--bot-running", action="store_true",
+        help="exit 0 if sorpple.py is running, 1 if not (used by the launcher)",
+    )
     args = parser.parse_args()
 
     if args.print_url:
@@ -328,6 +334,11 @@ def main():
         if url:
             print(url)
         return
+
+    if args.bot_running:
+        # The heartbeat is the only reliable signal: a bot process that has died
+        # without clearing it still goes stale within STATUS_STALE_SECONDS.
+        sys.exit(0 if sorpple_control.read_status() else 1)
 
     try:
         server = ThreadingHTTPServer((args.host, args.port), Handler)

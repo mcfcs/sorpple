@@ -114,6 +114,10 @@ def drain() -> list[dict]:
     Clearing by rewriting the whole file (rather than removing entries one by one)
     keeps this a single atomic replace; an action queued during the drain lands in
     the next tick instead of being lost.
+
+    The bot calls this once at startup purely to throw the backlog away — clicks
+    made while it was stopped must not override the settings it has just loaded.
+    From then on the queue only ever holds actions from a live session.
     """
     queue = _read_json(CONTROL_FILE, {"queue": []})
     if not isinstance(queue, dict):

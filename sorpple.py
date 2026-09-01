@@ -344,8 +344,13 @@ class SorppleBot(discord.Client):
         if self.sample_mode or self.ping_test_year:
             return
 
-        # Drain any actions queued while the bot was down, and start the heartbeat
-        # so the dashboard shows the bot as online.
+        # Discard anything queued while the bot was down before the watcher can
+        # see it.  Those clicks were made against a stopped bot, and replaying
+        # them here would silently override the saved settings the pollers below
+        # have just been started from.
+        dropped = sorpple_control.drain()
+        if dropped:
+            log(f"[control] Ignoring {len(dropped)} action(s) queued while stopped.")
         self.control_watcher.start()
 
         for src in self.sources.values():

@@ -82,7 +82,7 @@ export function Button({
  * On/off control. A real checkbox underneath, so it is reachable by keyboard and
  * announced correctly; the visual switch is drawn on top.
  */
-export function Switch({ checked, onChange, disabled, label, hue = 'live' }) {
+export function Switch({ checked, onChange, disabled, label, title, hue = 'live' }) {
   // Tailwind only keeps classes it can see in the source, so this maps rather
   // than interpolating `bg-${hue}` — that class would never be generated.
   const onColor = { live: 'bg-live', ...Object.fromEntries(
@@ -91,6 +91,7 @@ export function Switch({ checked, onChange, disabled, label, hue = 'live' }) {
 
   return (
     <label
+      title={title}
       className={`inline-flex items-center gap-2.5 ${
         disabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'
       }`}

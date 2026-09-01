@@ -5,26 +5,28 @@ cd /d "%~dp0"
 REM ---------------------------------------------------------------------------
 REM  Sorpple web dashboard launcher.
 REM
-REM    start-sorpple-web.bat                 dashboard only
-REM    start-sorpple-web.bat --with-bot      dashboard + the Discord bot
+REM    start-sorpple-web.bat                 the bot + the dashboard
+REM    start-sorpple-web.bat --no-bot        dashboard only
 REM    start-sorpple-web.bat --port 8080     a different port
 REM    start-sorpple-web.bat --rebuild       force a fresh front-end build
 REM
-REM  The bot is NOT started by default: if sorpple.py is already running
-REM  elsewhere, a second instance would post every listing to Discord twice.
+REM  The bot is started too, because the dashboard's controls do nothing without
+REM  it -- they only queue actions for the bot to apply.  An already-running bot
+REM  is detected and left alone, so this never double-posts to Discord.
 REM ---------------------------------------------------------------------------
 
 set "PORT=7331"
-set "WITH_BOT="
+set "NO_BOT="
 set "REBUILD="
 
 :parse
 if "%~1"=="" goto parsed
-if /i "%~1"=="--with-bot" set "WITH_BOT=1" & shift & goto parse
-if /i "%~1"=="--rebuild"  set "REBUILD=1"  & shift & goto parse
-if /i "%~1"=="--port"     set "PORT=%~2"   & shift & shift & goto parse
+if /i "%~1"=="--no-bot"   set "NO_BOT=1"  & shift & goto parse
+if /i "%~1"=="--with-bot" shift & goto parse
+if /i "%~1"=="--rebuild"  set "REBUILD=1" & shift & goto parse
+if /i "%~1"=="--port"     set "PORT=%~2"  & shift & shift & goto parse
 echo Unknown option: %~1
-echo Usage: start-sorpple-web.bat [--with-bot] [--rebuild] [--port N]
+echo Usage: start-sorpple-web.bat [--no-bot] [--rebuild] [--port N]
 exit /b 1
 :parsed
 
@@ -70,10 +72,18 @@ if not exist "web\dist\index.html" (
     echo.
 )
 
-REM -- Optionally start the bot in its own window -----------------------------
-if defined WITH_BOT (
-    echo Starting the Discord bot in a separate window...
-    start "Sorpple bot" cmd /k ""%PY%" sorpple.py"
+REM -- Start the bot, unless one is already running or --no-bot was passed -----
+REM  Without the bot, every control on the dashboard only queues an action that
+REM  nothing will ever apply -- so it starts by default.
+if not defined NO_BOT (
+    "%PY%" sorpple_web.py --bot-running >nul 2>&1
+    if errorlevel 1 (
+        echo Starting the Discord bot in a separate window...
+        start "Sorpple bot" cmd /k ""%PY%" sorpple.py"
+        echo   Give it ~20 seconds to connect to Discord.
+    ) else (
+        echo Sorpple is already running; leaving it alone.
+    )
     echo.
 )
 
