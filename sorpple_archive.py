@@ -259,6 +259,76 @@ ADAPTERS = {
 # ── Storage ───────────────────────────────────────────────────────────────────
 
 
+def description(source_key: str, listing_id: str) -> tuple[str | None, str]:
+    """Full job description for one listing, as markdown.
+
+    Returns (text, origin) where origin is "cache" or "fetched".  Descriptions
+    are fetched from the board on first request and then stored on the listing,
+    so opening the same one twice costs nothing — this matters for Indeed, where
+    every fetch spends a paid proxy request.
+
+    Returns (None, ...) when the board has no description for it.
+    """
+    data  = load()
+    index = {f"{e['source']}:{e['id']}": e for e in data["listings"]}
+    entry = index.get(f"{source_key}:{listing_id}")
+    if entry is None:
+        return None, "unknown"
+
+    if entry.get("description"):
+        return entry["description"], "cache"
+
+    text = _fetch_description(source_key, listing_id)
+    if text:
+        entry["description"] = text
+        try:
+            save(data)
+        except OSError as exc:
+            log(f"[archive] Could not cache description: {exc!r}")
+    return text, "fetched"
+
+
+def _fetch_description(source_key: str, listing_id: str) -> str | None:
+    """Pull one description from its board and render it as markdown.
+
+    Imported lazily: the scrapers pull in proxy lists and are only needed when a
+    description is actually requested, not to serve the listings table.
+    """
+    try:
+        if source_key == "prosple":
+            from prosple_monitor import fetch_description, html_to_markdown
+            raw = fetch_description(listing_id)
+            return html_to_markdown(raw) if raw else None
+
+        if source_key == "jobstreet":
+            from jobstreet_monitor import fetch_description, html_to_markdown
+            raw = fetch_description(listing_id, _proxies("JOBSTREET"))
+            return html_to_markdown(raw) if raw else None
+
+        if source_key == "indeed":
+            from indeed_monitor import fetch_description, html_to_markdown
+            raw = fetch_description(listing_id, _proxies("INDEED"))
+            return html_to_markdown(raw) if raw else None
+    except Exception as exc:  # noqa: BLE001 — a failed fetch is not an error page
+        log(f"[archive] Description fetch failed for {source_key}:{listing_id}: {exc!r}")
+    return None
+
+
+def _proxies(prefix: str) -> list | None:
+    """Proxy list for a source, honouring the same env vars sorpple.py reads."""
+    import os as _os
+
+    from indeed_monitor import load_proxies
+
+    flag = (_os.environ.get(f"{prefix}_USE_PROXIES", "") or "").strip().lower()
+    default_on = prefix == "INDEED"
+    enabled = default_on if flag == "" else flag in ("1", "true", "yes", "on")
+    if not enabled:
+        return None
+    path = _os.environ.get(f"{prefix}_PROXIES_FILE", _os.path.join(SCRIPT_DIR, "proxies.txt"))
+    return load_proxies(path) or None
+
+
 def load() -> dict:
     """Read the archive.  Never raises — a broken file starts a fresh one."""
     if not os.path.exists(ARCHIVE_FILE):

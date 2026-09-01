@@ -54,6 +54,7 @@ export default {
         // The only motion in the design, spent on the tick strip.
         sweep: 'sweep 2.4s cubic-bezier(0.4, 0, 0.2, 1) infinite',
         surface: 'surface 0.4s cubic-bezier(0.2, 0, 0.2, 1)',
+        'slide-in': 'slide-in 0.28s cubic-bezier(0.16, 1, 0.3, 1)',
       },
       keyframes: {
         sweep: {
@@ -64,6 +65,10 @@ export default {
         surface: {
           from: { opacity: '0', transform: 'translateY(4px)' },
           to:   { opacity: '1', transform: 'none' },
+        },
+        'slide-in': {
+          from: { transform: 'translateX(100%)' },
+          to:   { transform: 'none' },
         },
       },
     },

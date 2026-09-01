@@ -53,6 +53,11 @@ async function request(path, options) {
 export const getStatus = () => request('/api/status')
 export const getListings = () => request('/api/listings')
 
+// Fetched from the job board on first ask, then cached server-side — so opening
+// the same listing twice never spends a second proxy request.
+export const getDescription = (source, id) =>
+  request(`/api/description/${source}/${encodeURIComponent(id)}`)
+
 function post(action, payload) {
   return request(`/api/${action}`, {
     method: 'POST',

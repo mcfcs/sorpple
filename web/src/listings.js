@@ -77,6 +77,19 @@ export function relativeDays(days, { future }) {
   return future ? `in ${days} days` : `${days} days ago`
 }
 
+/** "2 Sep 2026, 06:14" — the exact moment, for a tooltip behind a relative time. */
+export function formatDateTime(value) {
+  const time = parse(value)
+  if (time === null) return null
+  return new Date(time).toLocaleString(undefined, {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
 export function formatDate(value) {
   const time = parse(value)
   if (time === null) return null

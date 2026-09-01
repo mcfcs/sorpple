@@ -1,6 +1,6 @@
 /** Shared building blocks: the pieces used by both views. */
 
-import { useEffect, useState } from 'react'
+import { forwardRef, useEffect, useState } from 'react'
 
 /** Tailwind can't build class names at runtime, so map source -> classes here. */
 export const HUE = {
@@ -44,15 +44,10 @@ export function Stat({ value, label, tone = 'text-paper' }) {
   )
 }
 
-export function Button({
-  children,
-  onClick,
-  disabled,
-  variant = 'default',
-  size = 'md',
-  className = '',
-  ...rest
-}) {
+export const Button = forwardRef(function Button(
+  { children, onClick, disabled, variant = 'default', size = 'md', className = '', ...rest },
+  ref,
+) {
   const variants = {
     default:
       'bg-ink-700 text-paper hover:bg-ink-600 border border-ink-600 disabled:hover:bg-ink-700',
@@ -66,6 +61,7 @@ export function Button({
   }
   return (
     <button
+      ref={ref}
       type="button"
       onClick={onClick}
       disabled={disabled}
@@ -76,7 +72,7 @@ export function Button({
       {children}
     </button>
   )
-}
+})
 
 /**
  * On/off control. A real checkbox underneath, so it is reachable by keyboard and

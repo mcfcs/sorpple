@@ -9,6 +9,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { SOURCE_META } from '../api'
 import { SORTS, STATUS, STATUS_ORDER, classify, filterListings } from '../listings'
 import ListingCard from './ListingCard'
+import ListingDetail from './ListingDetail'
 import { Button, Eyebrow, HUE } from './primitives'
 
 /** Render more only as the reader asks for it — the archive can reach thousands. */
@@ -60,6 +61,7 @@ function FilterGroup({ label, children }) {
 }
 
 export default function Listings({ listings, now, error }) {
+  const [selected, setSelected] = useState(null)
   const [query, setQuery] = useState('')
   const [sort, setSort] = useState('newest')
   const [visible, setVisible] = useState(PAGE_SIZE)
@@ -261,6 +263,7 @@ export default function Listings({ listings, now, error }) {
                 key={`${listing.source}:${listing.id}`}
                 listing={listing}
                 now={now}
+                onOpen={setSelected}
               />
             ))}
           </div>
@@ -274,6 +277,14 @@ export default function Listings({ listings, now, error }) {
           ) : null}
         </>
       )}
+
+      {selected ? (
+        <ListingDetail
+          listing={selected}
+          now={now}
+          onClose={() => setSelected(null)}
+        />
+      ) : null}
     </div>
   )
 }

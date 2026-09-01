@@ -32,7 +32,10 @@ from urllib.parse import unquote, urlparse
 
 import sorpple_archive
 import sorpple_control
-from prosple_monitor import SCRIPT_DIR, log
+from prosple_monitor import SCRIPT_DIR, load_dotenv, log
+
+# Description fetches honour INDEED_USE_PROXIES and friends, which live in .env.
+load_dotenv(os.path.join(SCRIPT_DIR, ".env"))
 
 DEFAULT_PORT = 7331
 DEFAULT_HOST = "0.0.0.0"
@@ -165,6 +168,18 @@ class Handler(BaseHTTPRequestHandler):
                 "listings":    archive.get("listings", []),
                 "server_time": datetime.now(timezone.utc).isoformat(),
             })
+
+        # /api/description/<source>/<id> — fetched from the board on first ask,
+        # then cached, so re-opening a listing costs no proxy request.
+        if path.startswith("/api/description/"):
+            parts = path[len("/api/description/"):].split("/", 1)
+            if len(parts) != 2 or parts[0] not in SOURCE_LABELS or not parts[1]:
+                return self._error(400, "expected /api/description/<source>/<id>")
+            source, listing_id = parts[0], unquote(parts[1])
+            text, origin = sorpple_archive.description(source, listing_id)
+            if origin == "unknown":
+                return self._error(404, "no such listing in the archive")
+            return self._send_json({"description": text, "origin": origin})
 
         if path.startswith("/api/"):
             return self._error(404, f"no such endpoint: {path}")
