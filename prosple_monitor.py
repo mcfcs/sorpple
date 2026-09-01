@@ -135,9 +135,28 @@ def save_state(state):
 # --------------------------------------------------------------------------- #
 # Logging helper.
 # --------------------------------------------------------------------------- #
+# Log lines carry em dashes and arrows, and listing titles carry anything at all.
+# A legacy Windows console defaults to cp1252/cp437, which cannot encode them: it
+# either mangles the output or raises UnicodeEncodeError mid-poll.  Switching the
+# stream to UTF-8 with a replacing error handler fixes both, once, at import.
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except (OSError, ValueError):
+        pass
+
+
 def log(message):
     stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{stamp}] {message}", flush=True)
+    line = f"[{stamp}] {message}"
+    try:
+        print(line, flush=True)
+    except UnicodeEncodeError:
+        # Belt and braces: a stream that refused to reconfigure still must not
+        # take a poll cycle down over one unprintable glyph.
+        encoding = getattr(sys.stdout, "encoding", None) or "ascii"
+        print(line.encode(encoding, "replace").decode(encoding), flush=True)
 
 
 # --------------------------------------------------------------------------- #

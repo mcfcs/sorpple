@@ -19,6 +19,11 @@ Run:  python sorpple.py
                                           print which would ping; posts nothing)
       python sorpple.py --ping-test [YR] (post ONE listing with the year role ping to
                                           verify the mention works, then exit)
+      python sorpple.py --backfill [N]   (archive the newest N listings per source for
+                                          the web dashboard; posts nothing)
+
+While running, the bot also serves the web dashboard: it drains actions queued by
+sorpple_web.py and publishes live telemetry back.  See sorpple_control.py.
 """
 
 import asyncio
@@ -77,8 +82,14 @@ from jobstreet_bot import JobDescriptionButton as JSJDButton
 from jobstreet_bot import build_view as js_build_view
 
 import sorpple_commands
+import sorpple_archive
+import sorpple_control
 
 SETTINGS_FILE = os.path.join(SCRIPT_DIR, "sorpple_settings.json")
+
+# How often the bot drains web-dashboard actions and republishes its telemetry.
+# Short enough that a click feels responsive, long enough to be free.
+CONTROL_TICK_SECONDS = 2
 
 # Built-in per-source poll intervals, in minutes.  Indeed is deliberately the
 # slowest: every Indeed request goes through a paid rotating proxy to get past
@@ -333,6 +344,10 @@ class SorppleBot(discord.Client):
         if self.sample_mode or self.ping_test_year:
             return
 
+        # Drain any actions queued while the bot was down, and start the heartbeat
+        # so the dashboard shows the bot as online.
+        self.control_watcher.start()
+
         for src in self.sources.values():
             src.loop.change_interval(minutes=src.minutes)
             if src.paused:
@@ -561,6 +576,9 @@ class SorppleBot(discord.Client):
             for item in reversed(latest):
                 await self._send(channel, src.embed(item), src.view(item))
                 await asyncio.sleep(1)
+            # Archive the whole fetched page, not just the seeded slice: the rest
+            # is marked seen below and would otherwise never reach the dashboard.
+            await loop.run_in_executor(None, sorpple_archive.record_many, src.key, items)
             for item in items:
                 seen.add(item["id"])
             state.update(initialized=True, seen_ids=sorted(seen))
@@ -589,6 +607,9 @@ class SorppleBot(discord.Client):
                 src.view(item),
                 content=self._content_for(src, item, years),
             )
+            # Keep the dashboard's copy in step with the channel.  Runs off the
+            # event loop, and never raises — see sorpple_archive.record().
+            await loop.run_in_executor(None, sorpple_archive.record, src.key, item, years)
             seen.add(item["id"])
             posted += 1
             await asyncio.sleep(1)
@@ -627,6 +648,109 @@ class SorppleBot(discord.Client):
     @indeed_poller.before_loop
     async def _before_indeed(self):
         await self.wait_until_ready()
+
+    # ── Web dashboard bridge ──────────────────────────────────────────────────
+    # The dashboard runs in its own process, so it cannot touch these loop
+    # objects directly.  It queues actions to a file; this task applies them and
+    # publishes telemetry back.  Every action below routes through the same
+    # mutation the matching slash command performs, so Discord and the website
+    # can never drift apart.
+
+    @tasks.loop(seconds=CONTROL_TICK_SECONDS)
+    async def control_watcher(self):
+        try:
+            actions = await asyncio.get_running_loop().run_in_executor(
+                None, sorpple_control.drain
+            )
+            for action in actions:
+                await self._apply_control(action)
+            sorpple_control.publish_status(self._status_payload())
+        except Exception as exc:  # noqa: BLE001 — the bridge must not kill the bot
+            log(f"[control] Tick failed: {exc!r}")
+
+    @control_watcher.before_loop
+    async def _before_control(self):
+        await self.wait_until_ready()
+
+    def _status_payload(self) -> dict:
+        """Live telemetry for the dashboard — the /status embed as JSON."""
+        sources = {}
+        for key, src in self.sources.items():
+            running = src.loop is not None and src.loop.is_running()
+            next_at = src.loop.next_iteration if running else None
+            sources[key] = {
+                "key":        key,
+                "label":      src.label,
+                "minutes":    src.minutes,
+                "running":    running,
+                "paused":     src.paused,
+                "next_run":   next_at.isoformat() if next_at else None,
+                "last_poll":  src.last_poll.isoformat() if src.last_poll else None,
+                "last_new":   src.last_new,
+                "last_error": src.last_error,
+                "seen_count": self._seen_count(src),
+            }
+        return {
+            "online":     True,
+            "bot_user":   str(self.user) if self.user else None,
+            "sources":    sources,
+            "year_roles": sorted(self.config.get("year_roles") or {}),
+        }
+
+    @staticmethod
+    def _seen_count(src: Source) -> int:
+        try:
+            return len(src.load_state().get("seen_ids", []))
+        except Exception:  # noqa: BLE001 — telemetry must survive a bad state file
+            return 0
+
+    async def _apply_control(self, action: dict) -> None:
+        name   = action.get("action")
+        target = action.get("source", "all")
+        value  = action.get("value")
+
+        if target == "all":
+            targets = list(self.sources.values())
+        elif target in self.sources:
+            targets = [self.sources[target]]
+        else:
+            log(f"[control] Ignoring action for unknown source {target!r}.")
+            return
+
+        for src in targets:
+            if name == "interval":
+                try:
+                    minutes = int(value)
+                except (TypeError, ValueError):
+                    log(f"[control] Ignoring non-numeric interval {value!r}.")
+                    return
+                src.minutes = min(MAX_MINUTES, max(MIN_MINUTES, minutes))
+                # Recalculates the sleep already in flight, so no extra poll fires.
+                src.loop.change_interval(minutes=src.minutes)
+                log(f"[{src.label}] Interval set to {src.minutes} min from the dashboard.")
+
+            elif name in ("pause", "monitor") and (name == "pause" or not value):
+                src.paused = True
+                if src.loop.is_running():
+                    src.loop.cancel()
+                log(f"[{src.label}] Paused from the dashboard.")
+
+            elif name in ("resume", "monitor"):
+                src.paused = False
+                if not src.loop.is_running():
+                    src.loop.change_interval(minutes=src.minutes)
+                    src.loop.start()   # discord.py runs the body immediately
+                log(f"[{src.label}] Resumed from the dashboard.")
+
+            elif name == "poll":
+                log(f"[{src.label}] Manual poll requested from the dashboard.")
+                await self.run_source(src.key)
+
+            else:
+                log(f"[control] Ignoring unknown action {name!r}.")
+                return
+
+        self.persist_settings()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -725,6 +849,34 @@ def check_years(config: dict, scan_limit: int = 5) -> None:
         log(f"[{src.label}] Done.")
 
 
+def backfill(config: dict, limit: int | None = None) -> None:
+    """Archive each board's current page without posting anything to Discord.
+
+    The state files only ever stored ids, so listings already posted have no
+    content to recover.  This gives the dashboard a real corpus immediately
+    instead of leaving it empty until the next new listing appears.
+
+    Nothing is sent to Discord and no state file is touched, so this is safe to
+    run against a live bot.
+    """
+    count = limit or config["fetch_limit"]
+    log(f"Backfilling the archive with the newest {count} listing(s) per source.")
+    total = 0
+
+    for src in build_sources(count).values():
+        try:
+            items = src.fetch()
+        except Exception as exc:  # noqa: BLE001
+            log(f"[{src.label}] Fetch failed: {exc!r}")
+            continue
+        stored = sorpple_archive.record_many(src.key, items)
+        total += stored
+        log(f"[{src.label}] Archived {stored} listing(s).")
+
+    log(f"Backfill complete — {total} listing(s) in "
+        f"{os.path.basename(sorpple_archive.ARCHIVE_FILE)}.")
+
+
 def _flag_value(flag: str, default: str) -> str:
     """Read the optional value after a flag (e.g. `--check-2027 10`)."""
     idx = sys.argv.index(flag)
@@ -739,6 +891,13 @@ def main():
                     scan_limit=max(1, int(_flag_value("--check-2027", "5"))))
         return
 
+    if "--backfill" in sys.argv:
+        # No Discord connection needed: this only fetches boards and writes the
+        # archive, so it works without a token configured.
+        backfill(load_config(require_discord=False),
+                 limit=int(_flag_value("--backfill", "0")) or None)
+        return
+
     config = load_config()
     sample = "--sample" in sys.argv
     ping_year = _flag_value("--ping-test", "2027") if "--ping-test" in sys.argv else None
@@ -747,6 +906,10 @@ def main():
         bot.run(config["token"], log_handler=None)
     except KeyboardInterrupt:
         log("Sorpple stopped. Bye!")
+    finally:
+        # Drop the heartbeat so the dashboard reports offline immediately rather
+        # than waiting for the staleness window to expire.
+        sorpple_control.clear_status()
 
 
 if __name__ == "__main__":

@@ -6,7 +6,9 @@ run it seeds the channel with the latest listings; from then on it watches for
 brand-new ones, pinging a year role when a listing mentions that intake year.
 
 It is controlled from Discord itself — slash commands change poll intervals,
-pause a source, or force a poll, with no restart and no `.env` edit.
+pause a source, or force a poll, with no restart and no `.env` edit. The same
+controls are available from a [web dashboard](#web-dashboard) on your tailnet,
+which also lets you search and filter every internship Sorpple has found.
 
 Three sources are monitored in parallel:
 
@@ -284,9 +286,120 @@ Each source tracks its own seen listings independently:
 All three are git-ignored and auto-created on first run. To re-seed a source
 from scratch, delete its state file and restart.
 
+These record **ids only** — whether a listing has been posted. The listing
+content itself lives in `listings.json`, written by the archive for the
+[web dashboard](#web-dashboard); see [the archive](#the-listing-archive).
+
 `sorpple_settings.json` (also git-ignored, auto-created) holds the intervals and
-paused flags set by the slash commands, so they survive restarts. Delete it to
-fall back to the `.env` values.
+paused flags set by the slash commands and the dashboard, so they survive
+restarts. Delete it to fall back to the `.env` values.
+
+---
+
+## Web dashboard
+
+A React + Tailwind dashboard for controlling the monitor and browsing everything
+it has found, served over your tailnet.
+
+```powershell
+start-sorpple-web.bat                 # builds the front end on first run, then serves it
+start-sorpple-web.bat --with-bot      # also starts sorpple.py in its own window
+start-sorpple-web.bat --port 8080     # a different port
+start-sorpple-web.bat --rebuild       # force a fresh front-end build
+```
+
+It prints both addresses on start:
+
+```
+Local      http://localhost:7331
+Tailnet    http://your-machine.tailnet.ts.net:7331
+```
+
+The bot is **not** started by default — if `sorpple.py` is already running,
+a second instance would post every listing to Discord twice.
+
+### What it does
+
+**Control** — a global monitor switch, plus per source: an on/off toggle, the
+poll interval, "poll now", a live countdown to the next run, and the last error.
+These go through the same code path as the slash commands, so `/status` in
+Discord and the dashboard always agree, and changes persist to
+`sorpple_settings.json` either way.
+
+**Internships** — every archived listing, searchable by title, company and
+location, filterable by source, status, work type and intake year. Each listing
+is classified by what its board actually tells us:
+
+| Status | Meaning |
+|--------|---------|
+| **Open** | has a deadline, still in the future |
+| **Closing soon** | deadline within 7 days |
+| **Closed** | Prosple flagged it expired, or its deadline has passed — dimmed, not hidden |
+| **Ageing** | no deadline published, posted 30+ days ago |
+| **No deadline** | no deadline published, still recent |
+
+Only Prosple publishes closing dates and an expiry flag. SEEK and Indeed drop
+expired ads from their feeds instead, so their listings never claim a deadline
+they don't have.
+
+### The listing archive
+
+The state files only ever recorded *seen ids*, so there was no listing content
+for a website to show. `sorpple_archive.py` keeps a parallel record in
+`listings.json`, written as each listing is posted. It never touches the state
+files — a deleted archive cannot change what the bot posts.
+
+Listings already posted before the archive existed have no content to recover.
+Fill it from the current boards:
+
+```powershell
+python sorpple.py --backfill          # newest 30 per source
+python sorpple.py --backfill 10       # fewer
+```
+
+Backfill posts nothing to Discord and touches no state file, so it is safe to
+run against a live bot.
+
+### How the controls reach the bot
+
+The dashboard runs as its own process, so a web-server bug cannot take Discord
+posting down with it. The two talk through two small files:
+
+| File | Direction | Holds |
+|------|-----------|-------|
+| `sorpple_control.json` | dashboard → bot | queued actions |
+| `sorpple_status.json` | bot → dashboard | live telemetry heartbeat |
+
+`sorpple.py` drains the queue every 2 seconds, so a click takes effect within
+about that long. With the bot stopped, the dashboard says so and queues your
+actions until it starts.
+
+### Endpoints
+
+| Method | Path | Body |
+|--------|------|------|
+| `GET` | `/api/status` | — |
+| `GET` | `/api/listings` | — |
+| `POST` | `/api/interval` | `{"source": "indeed", "value": 30}` |
+| `POST` | `/api/pause` · `/api/resume` | `{"source": "prosple"}` |
+| `POST` | `/api/monitor` | `{"value": false}` — all sources at once |
+| `POST` | `/api/poll` | `{"source": "all"}` |
+
+`source` accepts `prosple`, `jobstreet`, `indeed`, or `all`.
+
+> **There is no login.** Tailscale is the access boundary: only devices on your
+> tailnet can reach the port, and anyone who can reach it can pause the monitor.
+> Don't forward this port to the public internet.
+
+### Developing the front end
+
+```powershell
+cd web
+npm install
+npm run dev        # http://localhost:5174, proxies /api to 127.0.0.1:7331
+```
+
+Run `python sorpple_web.py` alongside it for the API.
 
 ---
 
@@ -296,6 +409,13 @@ fall back to the `.env` values.
 sorpple/
 ├── sorpple.py            # Unified bot — runs all three sources (recommended)
 ├── sorpple_commands.py   # Slash commands (/status, /interval, /pause, …)
+├── sorpple_archive.py    # Listing archive — the store behind the dashboard
+├── sorpple_control.py    # Control channel between the dashboard and the bot
+├── sorpple_web.py        # Dashboard API + static server (stdlib only)
+├── start-sorpple-web.bat # Launcher — builds the front end, serves it, prints the URL
+├── web/                  # React + Tailwind dashboard (Vite)
+│   ├── src/              #   App, views, components, design tokens
+│   └── dist/             #   Built assets (git-ignored, auto-created)
 ├── prosple_bot.py        # Prosple — interactive bot (buttons)
 ├── prosple_monitor.py    # Prosple — zero-dependency monitor (webhook or bot)
 ├── indeed_bot.py         # Indeed  — interactive bot (buttons)
@@ -309,5 +429,8 @@ sorpple/
 ├── state.json            # Prosple seen-listings (auto-created, git-ignored)
 ├── indeed_state.json     # Indeed seen-listings (auto-created, git-ignored)
 ├── jobstreet_state.json  # JobStreet seen-listings (auto-created, git-ignored)
-└── sorpple_settings.json # Intervals / paused flags set via slash commands
+├── sorpple_settings.json # Intervals / paused flags set via slash commands
+├── listings.json         # Listing archive for the dashboard (git-ignored)
+├── sorpple_control.json  # Queued dashboard actions (git-ignored, transient)
+└── sorpple_status.json   # Bot telemetry heartbeat (git-ignored, transient)
 ```

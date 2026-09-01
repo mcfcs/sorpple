@@ -1,0 +1,77 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    @apply bg-ink-900 text-paper font-body antialiased;
+    /* A faint vertical gradient keeps a large dark page from reading as flat
+       without adding any element to the design. */
+    background-image: radial-gradient(
+      120% 80% at 50% 0%,
+      #131e2b 0%,
+      #0b1119 55%
+    );
+    background-attachment: fixed;
+  }
+
+  /* Every focusable thing gets the same visible ring — keyboard navigation is
+     part of the quality floor, not an afterthought. */
+  :focus-visible {
+    @apply outline-none ring-2 ring-paper/70 ring-offset-2 ring-offset-ink-900 rounded-sm;
+  }
+
+  ::selection {
+    @apply bg-prosple/30 text-paper;
+  }
+
+  /* Scrollbars, tuned to the panel rather than left at OS default. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: #22303f transparent;
+  }
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply bg-ink-600 rounded-full border-2 border-solid border-transparent bg-clip-content;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-ink-500;
+  }
+}
+
+@layer components {
+  /* The eyebrow label used above every panel and field group: small, spaced,
+     uppercase, and always in the utility font. */
+  .eyebrow {
+    @apply font-mono text-micro uppercase tracking-[0.14em] text-paper-faint;
+  }
+
+  .panel {
+    @apply rounded-lg border border-ink-600/70 bg-ink-800/80 backdrop-blur-sm;
+  }
+
+  /* Telemetry: any number that changes on its own. Tabular figures stop the
+     layout shifting as a countdown ticks. */
+  .telemetry {
+    @apply font-mono tabular-nums;
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
