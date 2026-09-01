@@ -28,7 +28,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 import sorpple_archive
 import sorpple_control
@@ -56,9 +56,11 @@ STATE_FILES   = {
     "indeed":    "indeed_state.json",
 }
 
-# Requests bigger than this are refused outright — every real request here is a
-# few dozen bytes of JSON.
+# Requests bigger than this are refused outright — a control action is a few
+# dozen bytes of JSON.  Saving the proxy list is the one legitimately large
+# body, so it gets its own ceiling.
 MAX_BODY_BYTES = 64 * 1024
+MAX_PROXY_BODY_BYTES = 8 * 1024 * 1024
 
 
 def _read_json(path, fallback):
@@ -116,6 +118,133 @@ def build_status() -> dict:
     }
 
 
+# Enough backlog to see the last few poll cycles when the console is opened.
+LOG_TAIL_BYTES = 64 * 1024
+
+
+def read_log(since: int = 0) -> dict:
+    """Log lines appended after byte `since`, plus the new offset.
+
+    A first read (since=0) returns the tail rather than the whole file, so
+    opening the console does not ship half a megabyte of history.
+    """
+    path = os.path.join(SCRIPT_DIR, "sorpple.log")
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return {"lines": [], "offset": 0, "missing": True}
+
+    # The bot trims the log in place when it grows too large, so the file can
+    # legitimately shrink.  Treat that as "start again from the tail" rather
+    # than reading from an offset that no longer means anything.
+    start = since if 0 < since <= size else max(0, size - LOG_TAIL_BYTES)
+
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            fh.seek(start)
+            if start and since == 0:
+                fh.readline()   # drop the partial line a tail-seek lands in
+            text = fh.read()
+    except OSError as exc:
+        return {"lines": [], "offset": since, "error": str(exc)}
+
+    return {
+        "lines":  [line for line in text.splitlines() if line.strip()],
+        "offset": size,
+        "missing": False,
+    }
+
+
+# ── Proxies ───────────────────────────────────────────────────────────────────
+# proxies.txt is host:port:user:pass per line, and can hold thousands of entries.
+# The API pages through it rather than shipping the lot, and validates a rewrite
+# before touching the file the Indeed poller depends on.
+
+PROXY_PAGE = 200
+PROXY_MAX_LINES = 50_000
+
+
+def proxies_path() -> str:
+    return os.environ.get(
+        "INDEED_PROXIES_FILE", os.path.join(SCRIPT_DIR, "proxies.txt")
+    )
+
+
+def _proxy_lines() -> list[str]:
+    path = proxies_path()
+    if not os.path.exists(path):
+        return []
+    with open(path, "r", encoding="utf-8", errors="replace") as fh:
+        return [line.rstrip("\r\n") for line in fh]
+
+
+def valid_proxy(line: str) -> bool:
+    """host:port:user:pass, with a numeric port — what load_proxies() accepts."""
+    parts = line.split(":", 3)
+    if len(parts) != 4:
+        return False
+    host, port, user, password = parts
+    return bool(host and user and password) and port.isdigit() and 0 < int(port) < 65536
+
+
+def read_proxies(offset: int = 0, limit: int = PROXY_PAGE, query: str = "") -> dict:
+    """One page of the proxy list, with per-line validity."""
+    lines = _proxy_lines()
+    kept = [
+        (index, text)
+        for index, text in enumerate(lines)
+        if text.strip() and not text.lstrip().startswith("#")
+    ]
+    if query:
+        needle = query.lower()
+        kept = [(i, t) for i, t in kept if needle in t.lower()]
+
+    page = kept[offset: offset + limit]
+    return {
+        "path":    os.path.basename(proxies_path()),
+        "total":   len(kept),
+        "offset":  offset,
+        "invalid": sum(1 for _, text in kept if not valid_proxy(text.strip())),
+        "proxies": [
+            {"line": index + 1, "value": text.strip(), "valid": valid_proxy(text.strip())}
+            for index, text in page
+        ],
+    }
+
+
+def write_proxies(text: str) -> dict:
+    """Replace proxies.txt with `text`.  Returns a summary, or raises ValueError.
+
+    Written atomically, and only after every line validates: this file is what
+    Indeed polls through, and a malformed rewrite would silently drop the bot to
+    direct requests and straight into Cloudflare.
+    """
+    lines = [line.strip() for line in str(text).replace("\r\n", "\n").split("\n")]
+    entries = [line for line in lines if line and not line.startswith("#")]
+
+    if len(lines) > PROXY_MAX_LINES:
+        raise ValueError(f"too many lines (limit {PROXY_MAX_LINES})")
+
+    bad = [
+        {"line": index + 1, "value": line[:80]}
+        for index, line in enumerate(lines)
+        if line and not line.startswith("#") and not valid_proxy(line)
+    ]
+    if bad:
+        raise ValueError(
+            f"{len(bad)} line(s) are not host:port:user:pass — first is line {bad[0]['line']}"
+        )
+
+    path = proxies_path()
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write("\n".join(lines).rstrip("\n") + "\n")
+    os.replace(tmp, path)
+
+    log(f"[web] proxies.txt rewritten — {len(entries)} proxies.")
+    return {"total": len(entries)}
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "sorpple-web"
 
@@ -139,11 +268,11 @@ class Handler(BaseHTTPRequestHandler):
     def _error(self, status: int, message: str):
         self._send_json({"error": message}, status=status)
 
-    def _body(self) -> dict:
+    def _body(self, limit: int = MAX_BODY_BYTES) -> dict:
         length = int(self.headers.get("Content-Length") or 0)
         if length <= 0:
             return {}
-        if length > MAX_BODY_BYTES:
+        if length > limit:
             raise ValueError("request body too large")
         raw = self.rfile.read(length)
         try:
@@ -169,6 +298,35 @@ class Handler(BaseHTTPRequestHandler):
                 "server_time": datetime.now(timezone.utc).isoformat(),
             })
 
+        if path == "/api/proxies":
+            query = parse_qs(urlparse(self.path).query)
+
+            def _int(name, default):
+                try:
+                    return max(0, int((query.get(name) or [str(default)])[0]))
+                except ValueError:
+                    return default
+
+            # ?raw=1 returns the file verbatim, for the console's copy button.
+            if (query.get("raw") or [""])[0] in ("1", "true"):
+                return self._send_json({"text": "\n".join(_proxy_lines())})
+
+            return self._send_json(read_proxies(
+                offset=_int("offset", 0),
+                limit=min(_int("limit", PROXY_PAGE), 1000),
+                query=(query.get("q") or [""])[0].strip(),
+            ))
+
+        if path == "/api/log":
+            # ?since=<byte offset> returns only what was appended after it, so
+            # the console polls cheaply instead of re-sending the whole file.
+            query = parse_qs(urlparse(self.path).query)
+            try:
+                offset = int((query.get("since") or ["0"])[0])
+            except ValueError:
+                offset = 0
+            return self._send_json(read_log(offset))
+
         # /api/description/<source>/<id> — fetched from the board on first ask,
         # then cached, so re-opening a listing costs no proxy request.
         if path.startswith("/api/description/"):
@@ -192,6 +350,28 @@ class Handler(BaseHTTPRequestHandler):
             return self._error(404, f"no such endpoint: {path}")
 
         action = path[len("/api/"):].strip("/")
+
+        if action == "proxies":
+            try:
+                body = self._body(MAX_PROXY_BODY_BYTES)
+            except ValueError as exc:
+                return self._error(400, str(exc))
+            if not isinstance(body.get("text"), str):
+                return self._error(400, "expected a 'text' string holding the whole file")
+            try:
+                result = write_proxies(body["text"])
+            except ValueError as exc:
+                return self._error(400, str(exc))
+            except OSError as exc:
+                return self._error(500, f"could not write the proxy file: {exc}")
+            return self._send_json({
+                "saved": True,
+                "total": result["total"],
+                # The bot loads proxies once at startup, so a rewrite only takes
+                # effect on its next launch.  Say so rather than implying it is live.
+                "note": "Restart Sorpple for the new list to take effect.",
+            })
+
         if action not in sorpple_control.VALID_ACTIONS:
             return self._error(404, f"no such endpoint: {path}")
 

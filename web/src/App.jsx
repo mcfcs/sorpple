@@ -1,10 +1,13 @@
 /**
  * Sorpple dashboard.
  *
- * Two surfaces: Control (what the monitor is doing, and changing it) and
- * Listings (what it found). Status is polled continuously because it drives
- * every countdown; the archive is fetched once and refreshed after a poll,
- * since it only changes when the bot posts something.
+ * Four surfaces: Control (what the monitor is doing, and changing it),
+ * Internships (what it found), Console (the bot's log as it runs), and Proxies
+ * (the paid list Indeed reaches Cloudflare through).
+ *
+ * Status is polled continuously because it drives every countdown; the archive
+ * is fetched once and refreshed after a poll, since it only changes when the
+ * bot posts something.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
@@ -20,13 +23,17 @@ import {
   setMonitor,
 } from './api'
 import CadenceStrip from './components/CadenceStrip'
+import Console from './components/Console'
 import Listings from './components/Listings'
+import Proxies from './components/Proxies'
 import SourceCard from './components/SourceCard'
 import { Button, Eyebrow, Stat, Switch, useNow } from './components/primitives'
 
 const TABS = [
   { key: 'control', label: 'Control' },
   { key: 'listings', label: 'Internships' },
+  { key: 'console', label: 'Console' },
+  { key: 'proxies', label: 'Proxies' },
 ]
 
 export default function App() {
@@ -198,7 +205,7 @@ export default function App() {
       <main className="mx-auto max-w-6xl px-4 py-6 sm:px-6">
         {/* Offline is the one condition worth interrupting for: every control
             still works, but nothing takes effect until the bot is back. */}
-        {status && !online ? (
+        {tab === 'control' && status && !online ? (
           <div className="panel mb-5 border-halt/40 bg-halt/5 p-4">
             <p className="font-display text-sm font-semibold text-halt">
               Sorpple isn&apos;t running, so the controls are switched off.
@@ -221,13 +228,13 @@ export default function App() {
           </div>
         ) : null}
 
-        {statusError ? (
+        {tab === 'control' && statusError ? (
           <div className="panel mb-5 border-halt/30 bg-halt/5 p-4 text-sm text-halt">
             Can&apos;t reach the dashboard API: {statusError}
           </div>
         ) : null}
 
-        {notice ? (
+        {tab === 'control' && notice ? (
           <div
             className={`panel mb-5 p-3.5 text-tiny ${
               notice.kind === 'error'
@@ -286,8 +293,12 @@ export default function App() {
               </div>
             </div>
           )
-        ) : (
+        ) : tab === 'listings' ? (
           <Listings listings={listings} now={now} error={listingsError} />
+        ) : tab === 'console' ? (
+          <Console online={online} />
+        ) : (
+          <Proxies />
         )}
       </main>
 

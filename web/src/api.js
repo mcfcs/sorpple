@@ -30,6 +30,8 @@ export const MAX_MINUTES = 1440
 export const POLL_MS = 5000
 // The bot drains the control queue every 2s; wait past that before re-reading.
 export const SETTLE_MS = 2600
+// The console should feel live without hammering the disk.
+export const LOG_POLL_MS = 2000
 
 async function request(path, options) {
   const response = await fetch(path, options)
@@ -57,6 +59,21 @@ export const getListings = () => request('/api/listings')
 // the same listing twice never spends a second proxy request.
 export const getDescription = (source, id) =>
   request(`/api/description/${source}/${encodeURIComponent(id)}`)
+
+// The console tails the log by byte offset, so each poll ships only new lines.
+export const getLog = (since = 0) => request(`/api/log?since=${since}`)
+
+export const getProxies = ({ offset = 0, limit = 100, q = '' } = {}) =>
+  request(`/api/proxies?offset=${offset}&limit=${limit}&q=${encodeURIComponent(q)}`)
+
+export const getProxiesRaw = () => request('/api/proxies?raw=1')
+
+export const saveProxies = (text) =>
+  request('/api/proxies', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text }),
+  })
 
 function post(action, payload) {
   return request(`/api/${action}`, {

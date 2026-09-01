@@ -147,6 +147,30 @@ if hasattr(sys.stdout, "reconfigure"):
         pass
 
 
+# Every log line is also appended here so the web dashboard's console can show
+# what the bot is doing without the terminal being visible.  Trimmed in place
+# once it grows past LOG_MAX_BYTES, so it never needs external rotation.
+LOG_FILE = os.path.join(SCRIPT_DIR, "sorpple.log")
+LOG_MAX_BYTES = 512 * 1024
+LOG_KEEP_BYTES = 256 * 1024
+
+
+def _append_log(line):
+    """Mirror one line into sorpple.log.  Never raises — logging is not critical."""
+    try:
+        with open(LOG_FILE, "a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
+        if os.path.getsize(LOG_FILE) > LOG_MAX_BYTES:
+            with open(LOG_FILE, "r", encoding="utf-8", errors="replace") as fh:
+                fh.seek(os.path.getsize(LOG_FILE) - LOG_KEEP_BYTES)
+                fh.readline()          # drop the half line the seek landed in
+                tail = fh.read()
+            with open(LOG_FILE, "w", encoding="utf-8") as fh:
+                fh.write(tail)
+    except OSError:
+        pass
+
+
 def log(message):
     stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     line = f"[{stamp}] {message}"
@@ -157,6 +181,7 @@ def log(message):
         # take a poll cycle down over one unprintable glyph.
         encoding = getattr(sys.stdout, "encoding", None) or "ascii"
         print(line.encode(encoding, "replace").decode(encoding), flush=True)
+    _append_log(line)
 
 
 # --------------------------------------------------------------------------- #
