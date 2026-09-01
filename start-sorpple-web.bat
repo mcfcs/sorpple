@@ -9,6 +9,7 @@ REM    start-sorpple-web.bat                 the bot + the dashboard
 REM    start-sorpple-web.bat --no-bot        dashboard only
 REM    start-sorpple-web.bat --port 8080     a different port
 REM    start-sorpple-web.bat --rebuild       force a fresh front-end build
+REM    start-sorpple-web.bat --force         also free the port from a non-Sorpple app
 REM
 REM  The bot is started too, because the dashboard's controls do nothing without
 REM  it -- they only queue actions for the bot to apply.  An already-running bot
@@ -18,15 +19,17 @@ REM ---------------------------------------------------------------------------
 set "PORT=7331"
 set "NO_BOT="
 set "REBUILD="
+set "FORCE="
 
 :parse
 if "%~1"=="" goto parsed
 if /i "%~1"=="--no-bot"   set "NO_BOT=1"  & shift & goto parse
 if /i "%~1"=="--with-bot" shift & goto parse
 if /i "%~1"=="--rebuild"  set "REBUILD=1" & shift & goto parse
+if /i "%~1"=="--force"    set "FORCE=--force" & shift & goto parse
 if /i "%~1"=="--port"     set "PORT=%~2"  & shift & shift & goto parse
 echo Unknown option: %~1
-echo Usage: start-sorpple-web.bat [--no-bot] [--rebuild] [--port N]
+echo Usage: start-sorpple-web.bat [--no-bot] [--rebuild] [--force] [--port N]
 exit /b 1
 :parsed
 
@@ -85,6 +88,16 @@ if not defined NO_BOT (
         echo Sorpple is already running; leaving it alone.
     )
     echo.
+)
+
+REM -- Free the port ---------------------------------------------------------
+REM  Usually a dashboard left running from a previous launch.  Only a previous
+REM  Sorpple dashboard is stopped automatically; anything else needs --force.
+"%PY%" sorpple_web.py --free-port --port %PORT% %FORCE%
+if errorlevel 1 (
+    echo.
+    echo Port %PORT% could not be freed.  Use --port to pick another one.
+    exit /b 1
 )
 
 REM -- Report the reachable addresses ----------------------------------------

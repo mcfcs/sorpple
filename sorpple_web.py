@@ -25,6 +25,7 @@ import mimetypes
 import os
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlparse
@@ -315,6 +316,89 @@ def tailscale_url(port: int) -> str | None:
     return None
 
 
+def port_holder(port: int) -> tuple[int, str] | None:
+    """(pid, command line) of whatever is listening on `port`, or None.
+
+    Uses netstat + wmic rather than a library so this keeps the project's
+    zero-dependency rule.  Windows-only; on anything else it reports nothing and
+    the caller falls back to the plain "port in use" error.
+    """
+    if os.name != "nt":
+        return None
+    try:
+        out = subprocess.run(
+            ["netstat", "-ano", "-p", "TCP"],
+            capture_output=True, text=True, timeout=10, check=True,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+    pid = None
+    for line in out.splitlines():
+        parts = line.split()
+        # "TCP  0.0.0.0:7331  0.0.0.0:0  LISTENING  1234"
+        if len(parts) >= 5 and parts[-2].upper() == "LISTENING":
+            local = parts[1]
+            if local.rsplit(":", 1)[-1] == str(port):
+                pid = parts[-1]
+                break
+    if not pid or not pid.isdigit():
+        return None
+
+    command = ""
+    try:
+        info = subprocess.run(
+            ["wmic", "process", "where", f"ProcessId={pid}", "get", "CommandLine", "/value"],
+            capture_output=True, text=True, timeout=10,
+        ).stdout
+        for line in info.splitlines():
+            if line.startswith("CommandLine="):
+                command = line.split("=", 1)[1].strip()
+                break
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return int(pid), command
+
+
+def free_port(port: int, force: bool = False) -> bool:
+    """Stop whatever holds `port`.  Returns True if the port is now free.
+
+    Only a previous Sorpple dashboard is killed by default.  Something else
+    listening on this port is far more likely to be a service you care about
+    than a stale copy of this script, so that needs --force.
+    """
+    holder = port_holder(port)
+    if holder is None:
+        return True   # nothing listening, or we cannot tell — let bind() decide
+
+    pid, command = holder
+    if pid == os.getpid():
+        return True
+
+    is_ours = "sorpple_web" in command.lower()
+    if not is_ours and not force:
+        log(f"Port {port} is held by PID {pid}, which is not a Sorpple dashboard:")
+        log(f"  {command or '(command line unavailable)'}")
+        log("Refusing to kill it.  Use a different --port, or --free-port --force.")
+        return False
+
+    log(f"Port {port} is held by PID {pid} ({'previous dashboard' if is_ours else 'forced'}); stopping it.")
+    try:
+        subprocess.run(["taskkill", "/PID", str(pid), "/F", "/T"],
+                       capture_output=True, timeout=10, check=True)
+    except (OSError, subprocess.SubprocessError) as exc:
+        log(f"Could not stop PID {pid}: {exc}")
+        return False
+
+    # taskkill returns before the socket is released.
+    for _ in range(20):
+        if port_holder(port) is None:
+            return True
+        time.sleep(0.25)
+    log(f"PID {pid} was signalled but port {port} is still held.")
+    return False
+
+
 def main():
     parser = argparse.ArgumentParser(description="Sorpple web dashboard server.")
     parser.add_argument("--port", type=int, default=int(os.environ.get("SORPPLE_WEB_PORT", DEFAULT_PORT)))
@@ -326,6 +410,14 @@ def main():
     parser.add_argument(
         "--bot-running", action="store_true",
         help="exit 0 if sorpple.py is running, 1 if not (used by the launcher)",
+    )
+    parser.add_argument(
+        "--free-port", action="store_true",
+        help="stop whatever is holding the port, so the dashboard can bind it",
+    )
+    parser.add_argument(
+        "--force", action="store_true",
+        help="with --free-port, also stop a process that isn't a Sorpple dashboard",
     )
     args = parser.parse_args()
 
@@ -340,12 +432,23 @@ def main():
         # without clearing it still goes stale within STATUS_STALE_SECONDS.
         sys.exit(0 if sorpple_control.read_status() else 1)
 
+    if args.free_port:
+        sys.exit(0 if free_port(args.port, force=args.force) else 1)
+
     try:
         server = ThreadingHTTPServer((args.host, args.port), Handler)
-    except OSError as exc:
-        log(f"ERROR: could not bind {args.host}:{args.port} — {exc}")
-        log("Another process may already be using that port; try --port 8080.")
-        sys.exit(1)
+    except OSError:
+        # Almost always a dashboard left running from a previous launch.  Clear
+        # it out and retry once rather than making the user hunt down the PID.
+        log(f"Port {args.port} is busy; trying to free it.")
+        if not free_port(args.port, force=args.force):
+            sys.exit(1)
+        try:
+            server = ThreadingHTTPServer((args.host, args.port), Handler)
+        except OSError as exc:
+            log(f"ERROR: could not bind {args.host}:{args.port} — {exc}")
+            log("Try a different port with --port 8080.")
+            sys.exit(1)
 
     if not os.path.isdir(WEB_DIR):
         log("WARNING: web/dist not found — serving the API only. Build with: cd web && npm run build")
