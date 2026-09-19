@@ -19,6 +19,8 @@ common record, reusing the same formatting helpers the embeds use.
     load()                                   # -> {"listings": [...]}, for the API
 """
 
+import contextlib
+import time
 import json
 import os
 import re
@@ -36,6 +38,13 @@ from prosple_monitor import (
     resolve_apply,
 )
 from indeed_monitor import html_to_markdown as indeed_html_to_markdown
+
+try:
+    import msvcrt
+    fcntl = None
+except ImportError:  # POSIX
+    import fcntl
+    msvcrt = None
 
 ARCHIVE_FILE = os.path.join(SCRIPT_DIR, "listings.json")
 
@@ -279,20 +288,29 @@ def description(source_key: str, listing_id: str) -> tuple[str | None, str]:
 
     Returns (None, ...) when the board has no description for it.
     """
+    key   = f"{source_key}:{listing_id}"
     data  = load()
-    index = {f"{e['source']}:{e['id']}": e for e in data["listings"]}
-    entry = index.get(f"{source_key}:{listing_id}")
+    entry = {f"{e['source']}:{e['id']}": e for e in data["listings"]}.get(key)
     if entry is None:
         return None, "unknown"
 
     if entry.get("description"):
         return entry["description"], "cache"
 
+    # Fetch outside the lock: this hits the board over the network and can take
+    # seconds, and holding the archive that long would stall the bot's writes.
     text = _fetch_description(source_key, listing_id)
     if text:
-        entry["description"] = text
+        # Re-read under the lock so we merge into whatever the bot has archived
+        # in the meantime rather than writing back a stale snapshot.
         try:
-            save(data)
+            with _archive_lock():
+                data  = load()
+                index = {f"{e['source']}:{e['id']}": e for e in data["listings"]}
+                fresh = index.get(key)
+                if fresh is not None:
+                    fresh["description"] = text
+                    save(data)
         except OSError as exc:
             log(f"[archive] Could not cache description: {exc!r}")
     return text, "fetched"
@@ -337,6 +355,64 @@ def _proxies(prefix: str) -> list | None:
         return None
     path = _os.environ.get(f"{prefix}_PROXIES_FILE", _os.path.join(SCRIPT_DIR, "proxies.txt"))
     return load_proxies(path) or None
+
+
+# ── Cross-process locking ─────────────────────────────────────────────────────
+# The archive is read-modify-written from two processes: the bot records each
+# listing it posts, and the web server stores a description the first time a
+# detail panel is opened. Both do load -> mutate -> save, so without a lock the
+# slower writer's os.replace silently discards whatever the other one added.
+# The atomic replace only guarantees the file is never torn, not that an update
+# survives. One lock file, held for the whole read-modify-write.
+
+_LOCK_FILE = os.path.join(SCRIPT_DIR, ".listings.lock")
+
+
+@contextlib.contextmanager
+def _archive_lock(timeout: float = 10.0):
+    """Hold an exclusive cross-process lock around a read-modify-write.
+
+    Falls through unlocked rather than losing the write if the lock cannot be
+    taken -- a dropped update is better than a dropped listing.
+    """
+    handle = None
+    try:
+        handle = open(_LOCK_FILE, "a+b")
+    except OSError:
+        yield
+        return
+
+    deadline = time.monotonic() + timeout
+    locked = False
+    try:
+        while True:
+            try:
+                if msvcrt is not None:
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                locked = True
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    log("WARNING: archive lock timed out; writing unlocked.")
+                    break
+                time.sleep(0.05)
+        yield
+    finally:
+        if locked:
+            try:
+                if msvcrt is not None:
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
+        try:
+            handle.close()
+        except OSError:
+            pass
 
 
 def load() -> dict:
@@ -386,23 +462,24 @@ def record_many(source_key: str, items: list[dict]) -> int:
         log(f"[archive] Unknown source {source_key!r}; skipping.")
         return 0
 
-    data = load()
-    index = {f"{e['source']}:{e['id']}": e for e in data["listings"]}
-    stored = 0
+    with _archive_lock():
+        data = load()
+        index = {f"{e['source']}:{e['id']}": e for e in data["listings"]}
+        stored = 0
 
-    for item in items:
-        try:
-            entry = adapter(item)
-        except Exception as exc:  # noqa: BLE001
-            log(f"[archive] Could not map {source_key} listing: {exc!r}")
-            continue
-        if not entry["id"]:
-            continue
-        _merge(index, source_key, entry, [])
-        stored += 1
+        for item in items:
+            try:
+                entry = adapter(item)
+            except Exception as exc:  # noqa: BLE001
+                log(f"[archive] Could not map {source_key} listing: {exc!r}")
+                continue
+            if not entry["id"]:
+                continue
+            _merge(index, source_key, entry, [])
+            stored += 1
 
-    data["listings"] = _trim(list(index.values()))
-    save(data)
+        data["listings"] = _trim(list(index.values()))
+        save(data)
     return stored
 
 
@@ -416,11 +493,12 @@ def _record(source_key: str, item: dict, years: list[str]) -> None:
     if not entry["id"]:
         return
 
-    data  = load()
-    index = {f"{e['source']}:{e['id']}": e for e in data["listings"]}
-    _merge(index, source_key, entry, years)
-    data["listings"] = _trim(list(index.values()))
-    save(data)
+    with _archive_lock():
+        data  = load()
+        index = {f"{e['source']}:{e['id']}": e for e in data["listings"]}
+        _merge(index, source_key, entry, years)
+        data["listings"] = _trim(list(index.values()))
+        save(data)
 
 
 def _merge(index: dict, source_key: str, entry: dict, years: list[str]) -> None:

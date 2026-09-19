@@ -20,6 +20,7 @@ monitor -- do not expose this port to the public internet.
 """
 
 import argparse
+import gzip
 import json
 import mimetypes
 import os
@@ -255,10 +256,25 @@ class Handler(BaseHTTPRequestHandler):
         # polls a few times a minute, which would bury anything worth reading.
         pass
 
+    # Below this, framing and the gzip call cost more than they save.
+    GZIP_MIN_BYTES = 1024
+
     def _send_json(self, payload, status: int = 200):
         body = json.dumps(payload).encode("utf-8")
+        encoding = None
+        # The archive is the big one -- ~1.1 MB of JSON, and mostly repeated keys
+        # and URL prefixes, so it compresses about 10:1. Worth doing over a
+        # tailnet, and free for the small responses because we skip them.
+        if len(body) >= self.GZIP_MIN_BYTES and "gzip" in (
+            self.headers.get("Accept-Encoding") or ""
+        ):
+            body = gzip.compress(body, compresslevel=6)
+            encoding = "gzip"
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
+        if encoding:
+            self.send_header("Content-Encoding", encoding)
+            self.send_header("Vary", "Accept-Encoding")
         self.send_header("Content-Length", str(len(body)))
         # Status is polled continuously; a cached response would freeze the UI.
         self.send_header("Cache-Control", "no-store")
@@ -293,8 +309,14 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/listings":
             archive = sorpple_archive.load()
+            # Descriptions are fetched per listing through /api/description and
+            # are the largest field on a record, so shipping them here is pure
+            # duplication that grows with every detail panel opened.
             return self._send_json({
-                "listings":    archive.get("listings", []),
+                "listings": [
+                    {k: v for k, v in entry.items() if k != "description"}
+                    for entry in archive.get("listings", [])
+                ],
                 "server_time": datetime.now(timezone.utc).isoformat(),
             })
 
