@@ -22,6 +22,7 @@ polling interval -- new listings rarely exceed 15 per poll.
 
 import gzip
 import html
+import http.client
 import http.cookiejar
 import json
 import os
@@ -174,30 +175,66 @@ def load_proxies(path):
 # --------------------------------------------------------------------------- #
 # HTTP fetch (proxy-aware, gzip-transparent).
 # --------------------------------------------------------------------------- #
-def _http_get(url, proxy_url=None, headers=None):
+def _http_get(url, proxy_url=None, headers=None, proxies=None, attempts=3):
     """GET a URL and return decoded HTML.
 
     Uses the shared _COOKIE_JAR so session cookies (Cloudflare clearance, Indeed
     session tokens) flow from the search page through to subsequent viewjob fetches.
     Pass `headers` to override REQUEST_HEADERS (e.g. for viewjob navigation).
+
+    Retries transient transport failures through a *different* proxy each time.
+    A proxy dying mid-body raises http.client.IncompleteRead, which is an
+    HTTPException rather than a URLError -- so it used to sail straight past
+    fetch_jobs' handlers and kill the whole 30-minute poll cycle. These failures
+    are isolated and proxy-specific (never two in a row in the logs), so drawing
+    a fresh proxy and trying again absorbs nearly all of them.
+
+    Pass `proxies` to let a retry re-draw; without it every attempt reuses
+    `proxy_url` and only genuinely transient faults benefit.
     """
-    handlers = [urllib.request.HTTPCookieProcessor(_COOKIE_JAR)]
-    if proxy_url:
-        handlers.append(urllib.request.ProxyHandler({"http": proxy_url, "https": proxy_url}))
-    else:
-        handlers.append(urllib.request.ProxyHandler({}))
-    opener = urllib.request.build_opener(*handlers)
-    req = urllib.request.Request(url, headers=headers or REQUEST_HEADERS)
-    with opener.open(req, timeout=30) as resp:
-        raw = resp.read()
-        if resp.headers.get("Content-Encoding") == "gzip":
-            raw = gzip.decompress(raw)
-    return raw.decode("utf-8", errors="replace")
+    last_exc = None
+    for attempt in range(attempts):
+        if attempt and proxies:
+            # The previous proxy just failed us -- don't ask it again.
+            proxy_url = random.choice(proxies)
+        handlers = [urllib.request.HTTPCookieProcessor(_COOKIE_JAR)]
+        if proxy_url:
+            handlers.append(
+                urllib.request.ProxyHandler({"http": proxy_url, "https": proxy_url})
+            )
+        else:
+            handlers.append(urllib.request.ProxyHandler({}))
+        opener = urllib.request.build_opener(*handlers)
+        req = urllib.request.Request(url, headers=headers or REQUEST_HEADERS)
+        try:
+            with opener.open(req, timeout=30) as resp:
+                raw = resp.read()
+                if resp.headers.get("Content-Encoding") == "gzip":
+                    raw = gzip.decompress(raw)
+            return raw.decode("utf-8", errors="replace")
+        except urllib.error.HTTPError:
+            # A real answer from Indeed (403, 404, ...). Retrying won't change it.
+            raise
+        except http.client.IncompleteRead as exc:
+            last_exc = exc
+            # The bytes that did arrive are often the whole job-card blob, so on
+            # the final attempt salvage them rather than losing the cycle.
+            if attempt == attempts - 1 and exc.partial:
+                body = exc.partial
+                try:
+                    if body[:2] == b"\x1f\x8b":
+                        body = gzip.decompress(body)
+                except (OSError, EOFError):
+                    pass
+                log(f"Indeed truncated the response; salvaging {len(exc.partial)} bytes.")
+                return body.decode("utf-8", errors="replace")
+        except (urllib.error.URLError, http.client.HTTPException, OSError) as exc:
+            last_exc = exc
+        if attempt < attempts - 1:
+            time.sleep(1 + attempt)
+    raise last_exc
 
 
-# --------------------------------------------------------------------------- #
-# Indeed HTML → job list extraction.
-# --------------------------------------------------------------------------- #
 def _extract_results(page_html):
     """
     Pull the raw job-card list out of Indeed's embedded JavaScript.
@@ -320,7 +357,7 @@ def fetch_description(jk, proxies=None):
     try:
         proxy_url = random.choice(proxies) if proxies else None
         url = SEARCH_URL + "?" + urllib.parse.urlencode({**SEARCH_QUERY, "vjk": jk})
-        page = _http_get(url, proxy_url=proxy_url)
+        page = _http_get(url, proxy_url=proxy_url, proxies=proxies)
 
         desc = _extract_div_content(page, r'<div\b[^>]*\bid=["\']jobDescriptionText["\']')
         if desc:
@@ -363,15 +400,17 @@ def fetch_jobs(limit, proxies=None):
     url = SEARCH_URL + "?" + urllib.parse.urlencode(SEARCH_QUERY)
 
     try:
-        page = _http_get(url, proxy_url=proxy_url)
+        page = _http_get(url, proxy_url=proxy_url, proxies=proxies)
     except urllib.error.HTTPError as exc:
         if exc.code == 403:
             log("Indeed returned 403 (Cloudflare block). Try enabling/rotating proxies.")
         else:
             log(f"HTTP {exc.code} fetching Indeed search page.")
         return []
-    except urllib.error.URLError as exc:
-        log(f"Network error fetching Indeed: {exc}")
+    except (urllib.error.URLError, http.client.HTTPException, OSError) as exc:
+        # IncompleteRead is an HTTPException, not a URLError -- without this it
+        # escaped fetch_jobs entirely and aborted the poll cycle.
+        log(f"Network error fetching Indeed: {exc!r}")
         return []
 
     results = _extract_results(page)
