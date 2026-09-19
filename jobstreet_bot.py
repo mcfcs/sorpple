@@ -27,6 +27,8 @@ import os
 import sys
 
 import discord
+
+from prosple_monitor import safe_url
 from discord.ext import tasks
 
 from jobstreet_monitor import (
@@ -95,13 +97,17 @@ def build_view(job: dict) -> discord.ui.View:
       • 📋 Job Description (ephemeral) — always present
     """
     view = discord.ui.View(timeout=None)
-    view.add_item(
-        discord.ui.Button(
-            style=discord.ButtonStyle.link,
-            label="View on JobStreet",
-            url=job["job_url"],
+    # Discord rejects a button URL with raw spaces or a non-http scheme and
+    # fails the whole message, so only add the link when it will be accepted.
+    job_url = safe_url(job.get("job_url"))
+    if job_url:
+        view.add_item(
+            discord.ui.Button(
+                style=discord.ButtonStyle.link,
+                label="View on JobStreet",
+                url=job_url,
+            )
         )
-    )
     view.add_item(JobDescriptionButton(job["id"]))
     return view
 

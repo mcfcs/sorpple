@@ -34,6 +34,7 @@ import discord
 from discord.ext import tasks
 
 from prosple_monitor import (
+    safe_url,
     EMBED_COLOR,
     SCRIPT_DIR,
     SITE_BASE,
@@ -108,10 +109,12 @@ def build_view(opp):
                 url=apply_url,
             )
         )
-    if apply_url != detail_url and detail_url:
+    if apply_url != detail_url and detail_url and safe_url(detail_url):
         view.add_item(
             discord.ui.Button(
-                style=discord.ButtonStyle.link, label="View on Prosple", url=detail_url
+                style=discord.ButtonStyle.link,
+                label="View on Prosple",
+                url=safe_url(detail_url),
             )
         )
     view.add_item(JobDescriptionButton(opp["id"]))

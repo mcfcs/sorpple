@@ -462,6 +462,36 @@ def format_vacancies(opp):
     return str(high or low)
 
 
+def safe_url(url):
+    """Percent-encode a URL so Discord will accept it as a link-button target.
+
+    Employers hand Prosple/SEEK/Indeed apply links with raw spaces and other
+    unescaped characters in the query string (e.g. `...&title=Campaigns
+    Marketing Intern`). Discord validates button URLs strictly and answers
+    `50035 Invalid Form Body ... Not a well formed URL`, which aborted the whole
+    poll -- 179 times across the three sources -- and, because the post happens
+    before the archive write, dropped those listings from the dashboard too.
+
+    Returns None for anything that is not an http(s) URL, so callers can fall
+    back rather than hand Discord something it will reject.
+    """
+    if not url:
+        return None
+    url = url.strip()
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme not in ("http", "https") or not parts.netloc:
+        return None
+    return urllib.parse.urlunsplit(
+        (
+            parts.scheme,
+            parts.netloc,
+            urllib.parse.quote(parts.path, safe="/%:@&=+$,~"),
+            urllib.parse.quote(parts.query, safe="/?:@&=+$,%~"),
+            urllib.parse.quote(parts.fragment, safe="/?:@&=+$,%~"),
+        )
+    )
+
+
 def resolve_apply(opp, detail_url):
     """Return (label, url) for the apply action.
 
@@ -470,10 +500,10 @@ def resolve_apply(opp, detail_url):
     skips Prosple's sign-up wall. Otherwise the employer only accepts
     applications through Prosple, so fall back to the Prosple listing page.
     """
-    external = opp.get("applyByUrl") or opp.get("url")
+    external = safe_url(opp.get("applyByUrl") or opp.get("url"))
     if external:
         return "Apply on company site ↗", external
-    return "Apply on Prosple ↗", detail_url
+    return "Apply on Prosple ↗", safe_url(detail_url) or detail_url
 
 
 def build_components(opp, detail_url):

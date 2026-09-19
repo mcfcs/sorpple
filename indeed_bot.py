@@ -31,6 +31,8 @@ import os
 import sys
 
 import discord
+
+from prosple_monitor import safe_url
 from discord.ext import tasks
 
 from indeed_monitor import (
@@ -104,9 +106,11 @@ def build_view(job: dict) -> discord.ui.View:
             — when no external URL, or the URL exceeds 512 chars
       • 📋 Job Description (ephemeral) — always present
     """
-    job_url   = job["job_url"]
-    apply_url = job["apply_url"]
-    has_external = apply_url != job_url and len(apply_url) <= 512
+    # Discord rejects a button URL with raw spaces or a non-http scheme and
+    # fails the whole message, so normalise both before building the row.
+    job_url   = safe_url(job.get("job_url"))
+    apply_url = safe_url(job.get("apply_url"))
+    has_external = bool(apply_url) and apply_url != job_url and len(apply_url) <= 512
 
     view = discord.ui.View(timeout=None)
 
@@ -118,14 +122,15 @@ def build_view(job: dict) -> discord.ui.View:
                 url=apply_url,
             )
         )
-        view.add_item(
-            discord.ui.Button(
-                style=discord.ButtonStyle.link,
-                label="View on Indeed",
-                url=job_url,
+        if job_url:
+            view.add_item(
+                discord.ui.Button(
+                    style=discord.ButtonStyle.link,
+                    label="View on Indeed",
+                    url=job_url,
+                )
             )
-        )
-    else:
+    elif job_url:
         view.add_item(
             discord.ui.Button(
                 style=discord.ButtonStyle.link,
