@@ -48,25 +48,71 @@ from datetime import datetime, timezone
 # Constants discovered from the site's network traffic (HAR capture).
 # --------------------------------------------------------------------------- #
 API_URL = "https://prosple-gw.global.ssl.fastly.net/internal"
-OPERATION_NAME = "OpportunitiesSearchWithoutStudyFieldFacetsModernLocations"
-# Apollo persisted-query hash for the search operation above.
-PERSISTED_QUERY_HASH = "a5c386e9d954f71f4e59a31bebf8ccd4fe47cec501801142efe9cc10d44ff559"
-# Persisted query that returns the full job description (overview.fullText).
-SUPP_OPERATION_NAME = "GetOpportunitySearchJobDetails"
-SUPP_QUERY_HASH = "45d02cec209f76c33696e16c086c63149a951c8dbfd641e95a3af3850bb03122"
+
+# --------------------------------------------------------------------------- #
+# GraphQL documents.
 #
-# NOTE: these hashes identify the *query document* registered on Prosple's Apollo
-# gateway, and they rotate whenever Prosple redeploys their front end.  When the
-# API starts answering with {"code": "PERSISTED_QUERY_NOT_FOUND"}, both calls stop
-# working and need to be refreshed:
-#   1. Open ph.prosple.com in Chrome with DevTools > Network recording.
-#   2. Search for internships, then open one listing (that fires both operations).
-#   3. Save the capture as a .har and read the operationName + extensions.
-#      persistedQuery.sha256Hash out of the prosple-gw.global.ssl.fastly.net rows.
-# The `variables` we send are independent of the hash, so they normally survive a
-# rotation untouched -- only the two constants above need replacing.
-# Last refreshed: 2026-08-23 (previous search hash a03a1f6f..., detail hash
-# e0cb8084.. under the older name GetOpportunitySupplementaryDetails).
+# We used to call these operations by their Apollo *persisted-query hash* -- the
+# sha256 of a query document registered on Prosple's gateway. That coupled us to
+# Prosple's front-end build twice over: the hash rotated on every redeploy, and
+# the document behind it was whatever their UI needed, including fields we never
+# read. On 2026-09-02 they dropped `remoteAvailable` from the schema, so the
+# document behind our pinned hash stopped validating and every poll came back
+# `400 Bad Request` -- a failure we could not fix from our side, because the
+# server, not us, owned the query text.
+#
+# The gateway also accepts ordinary ad-hoc queries, so we now send the document
+# itself. It asks for exactly the fields this monitor renders, it cannot be
+# invalidated by a redeploy, and when Prosple does change the schema the error
+# names the offending field instead of a bare 400.
+# --------------------------------------------------------------------------- #
+SEARCH_OPERATION = "SorppleOpportunitiesSearch"
+SEARCH_QUERY = """
+query SorppleOpportunitiesSearch($parameters: OpportunitiesSearchInput!) {
+  opportunitiesSearch(parameters: $parameters) {
+    opportunities {
+      id
+      title
+      detailPageURL
+      url
+      applyByUrl
+      workMode
+      expired
+      applicationsOpen
+      applicationsOpenDate
+      applicationsCloseDate
+      hideSalary
+      minSalary
+      maxSalary
+      salaryDescription
+      minNumberVacancies
+      maxNumberVacancies
+      salary { currency { label } }
+      salaryCurrency { label }
+      geoAddresses { label locality }
+      studyFields { label }
+      opportunityTypes { label }
+      overview { summary }
+      parentEmployer {
+        title
+        logo { thumbnail { url } }
+        reviewStats { totalNumReviews }
+      }
+    }
+  }
+}
+"""
+
+DETAIL_OPERATION = "SorppleOpportunityDetail"
+# `id`/`gid` are ID! on this schema -- passing them as String! is rejected.
+DETAIL_QUERY = """
+query SorppleOpportunityDetail($id: ID!, $gid: ID!) {
+  opportunity(id: $id, gid: $gid) {
+    overview { fullText }
+  }
+}
+"""
+
 # Opportunity-type facet id for "Internship, Clerkship or Placement".
 INTERNSHIP_TYPE_ID = "2"
 SITE_BASE = "https://ph.prosple.com"
@@ -187,6 +233,47 @@ def log(message):
 # --------------------------------------------------------------------------- #
 # Prosple API.
 # --------------------------------------------------------------------------- #
+def _graphql(operation, query, variables, timeout=30):
+    """POST a GraphQL document and return its `data` payload.
+
+    Raises RuntimeError carrying the server's own message when the query is
+    rejected, so a schema change reads as the field that broke rather than as
+    an opaque `400 Bad Request`.
+    """
+    body = json.dumps(
+        {"operationName": operation, "query": query, "variables": variables}
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        API_URL, data=body, headers=REQUEST_HEADERS, method="POST"
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            raw = response.read()
+            if response.headers.get("Content-Encoding") == "gzip":
+                raw = gzip.decompress(raw)
+            payload = json.loads(raw)
+    except urllib.error.HTTPError as exc:
+        # A GraphQL validation failure is a 400 whose *body* holds the reason.
+        detail = ""
+        try:
+            raw = exc.read()
+            if exc.headers.get("Content-Encoding") == "gzip":
+                raw = gzip.decompress(raw)
+            errors = json.loads(raw).get("errors") or []
+            detail = "; ".join(e.get("message", "") for e in errors)[:400]
+        except Exception:  # noqa: BLE001 - never mask the original error
+            pass
+        if detail:
+            raise RuntimeError(f"{operation} rejected ({exc.code}): {detail}") from exc
+        raise
+
+    errors = payload.get("errors")
+    if errors:
+        detail = "; ".join(e.get("message", "") for e in errors)[:400]
+        raise RuntimeError(f"{operation} returned errors: {detail}")
+    return payload.get("data") or {}
+
+
 def fetch_internships(limit):
     """Return a list of newest-first internship opportunity dicts."""
     parameters = {
@@ -205,30 +292,8 @@ def fetch_internships(limit):
         # The key filter: only "Internship, Clerkship or Placement".
         "selectedOpportunityTypeFacets": [{"id": INTERNSHIP_TYPE_ID}],
     }
-    query = urllib.parse.urlencode(
-        {
-            "operationName": OPERATION_NAME,
-            "variables": json.dumps({"parameters": parameters}),
-            "extensions": json.dumps(
-                {
-                    "persistedQuery": {
-                        "version": 1,
-                        "sha256Hash": PERSISTED_QUERY_HASH,
-                    }
-                }
-            ),
-        }
-    )
-    request = urllib.request.Request(API_URL + "?" + query, headers=REQUEST_HEADERS)
-    with urllib.request.urlopen(request, timeout=30) as response:
-        raw = response.read()
-        if response.headers.get("Content-Encoding") == "gzip":
-            raw = gzip.decompress(raw)
-        payload = json.loads(raw)
-
-    if "errors" in payload:
-        raise RuntimeError("API returned errors: " + json.dumps(payload["errors"])[:500])
-    return payload["data"]["opportunitiesSearch"]["opportunities"]
+    data = _graphql(SEARCH_OPERATION, SEARCH_QUERY, {"parameters": parameters})
+    return _safe(data, "opportunitiesSearch", "opportunities", default=[]) or []
 
 
 def fetch_description(opp_id, gid="1"):
@@ -238,23 +303,11 @@ def fetch_description(opp_id, gid="1"):
     description should not stop a listing from being posted.
     """
     try:
-        query = urllib.parse.urlencode(
-            {
-                "operationName": SUPP_OPERATION_NAME,
-                "variables": json.dumps({"id": str(opp_id), "gid": str(gid)}),
-                "extensions": json.dumps(
-                    {"persistedQuery": {"version": 1, "sha256Hash": SUPP_QUERY_HASH}}
-                ),
-            }
+        data = _graphql(
+            DETAIL_OPERATION, DETAIL_QUERY, {"id": str(opp_id), "gid": str(gid)}
         )
-        request = urllib.request.Request(API_URL + "?" + query, headers=REQUEST_HEADERS)
-        with urllib.request.urlopen(request, timeout=30) as response:
-            raw = response.read()
-            if response.headers.get("Content-Encoding") == "gzip":
-                raw = gzip.decompress(raw)
-            payload = json.loads(raw)
-        return _safe(payload, "data", "opportunity", "overview", "fullText")
-    except (urllib.error.URLError, ValueError, KeyError) as exc:
+        return _safe(data, "opportunity", "overview", "fullText")
+    except (urllib.error.URLError, RuntimeError, ValueError, KeyError) as exc:
         log(f"Could not fetch description for {opp_id}: {exc}")
         return None
 
@@ -343,16 +396,19 @@ def format_location(opp):
         if label and label not in labels:
             labels.append(label)
     location = ", ".join(labels[:3]) if labels else None
-    if not location and opp.get("remoteAvailable"):
+    if not location and _is_remote(opp):
         location = "Remote"
     return location or "Philippines"
 
 
+def _is_remote(opp):
+    """Prosple dropped the `remoteAvailable` boolean; workMode now carries it."""
+    return "REMOTE" in (opp.get("workMode") or "").upper()
+
+
 def format_work_mode(opp):
-    mode = (opp.get("workMode") or "").replace("_", " ").title()
-    if opp.get("remoteAvailable") and "Remote" not in mode:
-        mode = (mode + " / Remote").strip(" /")
-    return mode or None
+    # e.g. "ON_SITE" -> "On Site", "HYBRID_REMOTE" -> "Hybrid Remote".
+    return (opp.get("workMode") or "").replace("_", " ").title() or None
 
 
 def format_salary(opp):
@@ -497,7 +553,6 @@ def build_embed(opp, include_full_description=True, include_apply_links=True):
     add_field("🏠 Work mode", format_work_mode(opp))
     add_field("💰 Salary", format_salary(opp) or "Not disclosed")
     add_field("👥 Vacancies", format_vacancies(opp))
-    add_field("🚀 Start date", _safe(opp, "startDate", "category", "label"))
     add_field("📅 Opens", format_date(opp.get("applicationsOpenDate")))
     add_field("⏳ Closes", format_date(opp.get("applicationsCloseDate"), with_relative=True))
     if rating:
@@ -722,7 +777,7 @@ def main():
         try:
             state = run_once(config, state)
         except urllib.error.HTTPError as exc:
-            log(f"API HTTP error {exc.code}; will retry next cycle.")
+            log(f"API HTTP error {exc.code}: {exc.reason}; will retry next cycle.")
         except urllib.error.URLError as exc:
             log(f"Network error reaching API: {exc}; will retry next cycle.")
         except Exception as exc:  # noqa: BLE001 - keep the loop alive

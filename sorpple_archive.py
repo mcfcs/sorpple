@@ -178,7 +178,9 @@ def _from_prosple(opp: dict) -> dict:
 
     return {
         "closed":         closed,
-        "start_date":     _safe(opp, "startDate", "category", "label"),
+        # startDate became a union (OpportunityStartDateRange) with no label and
+        # reads null on every PH listing, so there is nothing left to surface.
+        "start_date":     None,
         "id":             str(opp.get("id") or ""),
         "title":          opp.get("title") or "Untitled internship",
         "company":        employer.get("title") or employer.get("advertiserName") or "Unknown employer",
