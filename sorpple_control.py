@@ -21,6 +21,7 @@ sorpple_settings.json remains the source of truth for intervals and paused flags
 
 import json
 import os
+import subprocess
 import time
 from datetime import datetime, timezone
 
@@ -102,6 +103,11 @@ def read_status() -> dict | None:
     age = (datetime.now(timezone.utc) - published).total_seconds()
     if age > STATUS_STALE_SECONDS:
         return None
+    # Within the staleness window the timestamp alone cannot distinguish a live
+    # bot from one killed seconds ago -- and that is exactly the window someone
+    # restarts in.  A heartbeat whose process is gone is not a running bot.
+    if not _pid_alive(data.get("pid")):
+        return None
     return data
 
 
@@ -134,7 +140,35 @@ def publish_status(payload: dict) -> None:
     """Write the telemetry heartbeat the dashboard reads."""
     payload = dict(payload)
     payload["published_at"] = datetime.now(timezone.utc).isoformat()
+    # Stamp the pid so a reader can tell a live bot from a heartbeat left behind
+    # by one that was killed -- closing the console window skips clear_status().
+    payload["pid"] = os.getpid()
     _write_json(STATUS_FILE, payload)
+
+
+def _pid_alive(pid) -> bool:
+    """True if `pid` is a running process.  Unknown pids are assumed alive."""
+    if not isinstance(pid, int) or pid <= 0:
+        return True  # No pid recorded (an older bot): fall back to staleness.
+    if os.name == "nt":
+        # tasklist is always present on Windows and needs no extra privileges.
+        try:
+            out = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+                capture_output=True, text=True, timeout=5,
+            ).stdout
+        except (OSError, subprocess.SubprocessError):
+            return True
+        return str(pid) in out
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return True
+    return True
 
 
 def clear_status() -> None:

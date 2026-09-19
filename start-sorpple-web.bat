@@ -83,7 +83,25 @@ if not defined NO_BOT (
     if errorlevel 1 (
         echo Starting the Discord bot in a separate window...
         start "Sorpple bot" cmd /k ""%PY%" sorpple.py"
-        echo   Give it ~20 seconds to connect to Discord.
+        REM  Wait for the heartbeat rather than guessing.  If the bot cannot
+        REM  start -- a bad token, a missing dependency -- it dies in its own
+        REM  window and the dashboard would otherwise come up looking fine
+        REM  while every control silently does nothing.
+        set "BOT_UP="
+        for /l %%I in (1,1,30) do (
+            if not defined BOT_UP (
+                "%PY%" sorpple_web.py --bot-running >nul 2>&1
+                if not errorlevel 1 set "BOT_UP=1"
+                if not defined BOT_UP ping -n 2 127.0.0.1 >nul
+            )
+        )
+        if defined BOT_UP (
+            echo   Connected.
+        ) else (
+            echo   WARNING: the bot has not reported in after ~30s.
+            echo   Check the "Sorpple bot" window for the error - until it is
+            echo   running, the dashboard's controls will not do anything.
+        )
     ) else (
         echo Sorpple is already running; leaving it alone.
     )
