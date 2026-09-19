@@ -604,30 +604,56 @@ class SorppleBot(discord.Client):
         log(f"[{src.label}] {len(new)} new listing(s).")
         posted = 0
         pinged = 0
-        for item in reversed(new):
-            years = await self._year_hits(src, item)
-            if years:
-                pinged += 1
-                log(f"[{src.label}] {item['id']} mentions {', '.join(years)} — pinging role.")
-            await self._send(
-                channel,
-                src.embed(item),
-                src.view(item),
-                content=self._content_for(src, item, years),
-            )
-            # Keep the dashboard's copy in step with the channel.  Runs off the
-            # event loop, and never raises — see sorpple_archive.record().
-            await loop.run_in_executor(None, sorpple_archive.record, src.key, item, years)
-            seen.add(item["id"])
-            posted += 1
-            await asyncio.sleep(1)
-
-        state["seen_ids"] = sorted(seen)
-        src.save_state(state)
+        failed = 0
+        try:
+            for item in reversed(new):
+                # One bad listing must not cost us the rest of the batch. Discord
+                # rejects a whole message over things we do not control (an
+                # employer's malformed apply URL, an oversized embed), and this
+                # loop used to let that abort the cycle before save_state ran --
+                # so the next poll re-posted everything and hit the same listing
+                # again, forever. Skip it, mark it seen, keep going.
+                try:
+                    years = await self._year_hits(src, item)
+                    if years:
+                        pinged += 1
+                        log(
+                            f"[{src.label}] {item['id']} mentions "
+                            f"{', '.join(years)} — pinging role."
+                        )
+                    await self._send(
+                        channel,
+                        src.embed(item),
+                        src.view(item),
+                        content=self._content_for(src, item, years),
+                    )
+                    # Keep the dashboard's copy in step with the channel.  Runs
+                    # off the event loop, and never raises — see
+                    # sorpple_archive.record().
+                    await loop.run_in_executor(
+                        None, sorpple_archive.record, src.key, item, years
+                    )
+                    posted += 1
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:  # noqa: BLE001 - keep the batch alive
+                    failed += 1
+                    log(f"[{src.label}] Skipping {item.get('id')}: {exc!r}")
+                # Marked seen either way: a listing we cannot post will fail the
+                # same way next cycle, and retrying it forever blocks the queue.
+                seen.add(item["id"])
+                await asyncio.sleep(1)
+        finally:
+            # Persist whatever we got through, even if the poll is cancelled or
+            # something above escapes -- otherwise the whole batch replays.
+            state["seen_ids"] = sorted(seen)
+            src.save_state(state)
 
         summary = f"posted {posted} new listing(s)"
         if pinged:
             summary += f", {pinged} with a year ping"
+        if failed:
+            summary += f", {failed} skipped"
         return posted, summary
 
     # ── Pollers ───────────────────────────────────────────────────────────────
