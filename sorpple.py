@@ -217,10 +217,13 @@ def _prosple_scan_text(opp: dict) -> str:
         opp.get("title") or "",
         _safe(opp, "parentEmployer", "title") or "",
         _safe(opp, "overview", "summary") or "",
-        _safe(opp, "startDate", "category", "label") or "",
     ]
     raw = prosple_fetch_description(opp.get("id"))
     if raw:
+        # Stash it on the opportunity so the archive adapter can build a teaser
+        # from it without paying for a second fetch.  Prosple's overview.summary
+        # is empty on every current listing, so this is the only teaser source.
+        opp["_fullText"] = raw
         parts.append(prosple_html_to_markdown(raw))
     return "\n".join(parts)
 

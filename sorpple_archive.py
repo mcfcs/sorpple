@@ -197,7 +197,15 @@ def _from_prosple(opp: dict) -> dict:
         "posted_label":   None,
         "opens_at":       _iso(opp.get("applicationsOpenDate")),
         "closes_at":      _iso(opp.get("applicationsCloseDate")),
-        "teaser":         _clip(_safe(opp, "overview", "summary")),
+        # Prosple stopped populating overview.summary -- it is an empty string on
+        # every current listing -- so fall back to the full description, which the
+        # poll has usually already fetched for its year scan (see `_scan_text` in
+        # sorpple.py, which stashes it under `_fullText`).  Without this, Prosple
+        # rows are the only ones in the dashboard with no teaser at all.
+        "teaser":         _clip(
+            _safe(opp, "overview", "summary")
+            or prosple_html_to_markdown(opp.get("_fullText") or "")
+        ),
     }
 
 
