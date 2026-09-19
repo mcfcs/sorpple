@@ -43,23 +43,66 @@ export default function App() {
   const [statusError, setStatusError] = useState(null)
   const [listingsError, setListingsError] = useState(null)
   const [notice, setNotice] = useState(null)
-  const [busy, setBusy] = useState(false)
+  // Which source keys have an action in flight, so only those controls lock.
+  const [pending, setPending] = useState({})
   const now = useNow()
 
   // Guards a fetch that resolves after the component is gone.
   const alive = useRef(true)
   useEffect(() => () => { alive.current = false }, [])
 
+  /**
+   * What we asked for but the bot has not confirmed yet, as {key: {running,
+   * minutes}}. Actions are queued and applied up to CONTROL_TICK_SECONDS later,
+   * so a status poll landing in between still reports the old value. Rendering
+   * the server's answer directly made a flipped switch snap back and then flip
+   * again — the "glitchy" part. We show the intent until the server agrees.
+   */
+  const optimistic = useRef({})
+
+  /** Drop an optimistic value once the server reports the value we asked for. */
+  const reconcile = useCallback((data) => {
+    const wanted = optimistic.current
+    if (!Object.keys(wanted).length) return data
+    let changed = false
+    const next = {}
+    for (const [key, want] of Object.entries(wanted)) {
+      const live = (data?.sources || []).find((entry) => entry.key === key)
+      // Keep waiting while the bot is offline: nothing will apply the action,
+      // and clearing here would make the control flick back on its own.
+      const settled =
+        live &&
+        (want.running === undefined || live.running === want.running) &&
+        (want.minutes === undefined || live.minutes === want.minutes)
+      if (settled) changed = true
+      else next[key] = want
+    }
+    if (changed) optimistic.current = next
+    return data
+  }, [])
+
+  /** Status with any unconfirmed intent laid over it. */
+  const withPending = useCallback((data) => {
+    const wanted = optimistic.current
+    if (!data || !Object.keys(wanted).length) return data
+    return {
+      ...data,
+      sources: (data.sources || []).map((entry) =>
+        wanted[entry.key] ? { ...entry, ...wanted[entry.key] } : entry,
+      ),
+    }
+  }, [])
+
   const refreshStatus = useCallback(async () => {
     try {
       const data = await getStatus()
       if (!alive.current) return
-      setStatus(data)
+      setStatus(withPending(reconcile(data)))
       setStatusError(null)
     } catch (error) {
       if (alive.current) setStatusError(error.message)
     }
-  }, [])
+  }, [reconcile, withPending])
 
   const refreshListings = useCallback(async () => {
     try {
@@ -85,14 +128,31 @@ export default function App() {
    * next status read shows.
    */
   const act = useCallback(
-    async (fn, { message, reloadListings = false } = {}) => {
-      setBusy(true)
+    async (fn, { message, reloadListings = false, key, intent } = {}) => {
+      // Show the intent straight away. The request only queues the action, so
+      // without this the control sits on the old value for up to SETTLE_MS.
+      if (key && intent) {
+        optimistic.current = { ...optimistic.current, [key]: intent }
+        setStatus((current) => withPending(current))
+      }
+      // Lock only what is in flight; a slow Indeed poll should not freeze the
+      // JobStreet card.
+      const scope = key || '_global'
+      setPending((current) => ({ ...current, [scope]: true }))
       setNotice(null)
       try {
         const response = await fn()
         if (!alive.current) return
-        if (response?.note) setNotice({ kind: 'warn', text: response.note })
-        else if (message) setNotice({ kind: 'ok', text: message })
+        if (response?.note) {
+          setNotice({ kind: 'warn', text: response.note })
+          // Nothing will apply it (the bot is down), so do not leave the
+          // control showing a state that will never arrive.
+          if (key) {
+            const { [key]: _dropped, ...rest } = optimistic.current
+            optimistic.current = rest
+            refreshStatus()
+          }
+        } else if (message) setNotice({ kind: 'ok', text: message })
 
         window.setTimeout(() => {
           if (!alive.current) return
@@ -100,12 +160,24 @@ export default function App() {
           if (reloadListings) refreshListings()
         }, SETTLE_MS)
       } catch (error) {
-        if (alive.current) setNotice({ kind: 'error', text: error.message })
+        if (alive.current) {
+          setNotice({ kind: 'error', text: error.message })
+          if (key) {
+            const { [key]: _dropped, ...rest } = optimistic.current
+            optimistic.current = rest
+            refreshStatus()
+          }
+        }
       } finally {
-        if (alive.current) setBusy(false)
+        if (alive.current) {
+          setPending((current) => {
+            const { [scope]: _done, ...rest } = current
+            return rest
+          })
+        }
       }
     },
-    [refreshStatus, refreshListings],
+    [refreshStatus, refreshListings, withPending],
   )
 
   const sources = status?.sources ?? []
@@ -115,23 +187,34 @@ export default function App() {
   const handleToggle = (key, on) =>
     act(() => (on ? resumeSource(key) : pauseSource(key)), {
       message: `${on ? 'Resumed' : 'Paused'} ${key}.`,
+      key,
+      intent: { running: on },
     })
 
   const handleInterval = (key, minutes) =>
     act(() => setInterval_(key, minutes), {
       message: `${key} now polls every ${minutes} minutes.`,
+      key,
+      intent: { minutes },
     })
 
   const handlePoll = (key) =>
     act(() => pollNow(key), {
       message: `Polling ${key} now. New listings appear in Discord and here.`,
       reloadListings: true,
+      key,
     })
 
-  const handleMonitor = (on) =>
-    act(() => setMonitor(on), {
+  const handleMonitor = (on) => {
+    // The global switch moves every source, so state each one's intent.
+    const intents = {}
+    for (const source of sources) intents[source.key] = { running: on }
+    optimistic.current = { ...optimistic.current, ...intents }
+    setStatus((current) => withPending(current))
+    return act(() => setMonitor(on), {
       message: on ? 'Monitor on — all sources polling.' : 'Monitor off — all sources paused.',
     })
+  }
 
   return (
     <div className="min-h-screen">
@@ -193,7 +276,7 @@ export default function App() {
                   Disabling says so instead of flipping and silently queueing. */}
               <Switch
                 checked={anyRunning}
-                disabled={busy || !status || !online}
+                disabled={pending._global || !status || !online}
                 title={online ? undefined : 'Start Sorpple to use the monitor switch'}
                 onChange={handleMonitor}
               />
@@ -283,7 +366,7 @@ export default function App() {
                     key={source.key}
                     source={source}
                     now={now}
-                    busy={busy}
+                    busy={Boolean(pending[source.key] || pending._global)}
                     online={online}
                     onToggle={handleToggle}
                     onInterval={handleInterval}

@@ -28,8 +28,12 @@ export const MAX_MINUTES = 1440
 
 // Status is cheap to fetch and drives every countdown on the page.
 export const POLL_MS = 5000
-// The bot drains the control queue every 2s; wait past that before re-reading.
-export const SETTLE_MS = 2600
+// The bot drains the control queue every 2s, then republishes its heartbeat on
+// the following tick, so a change can take ~4-5s to show up in /api/status --
+// measured at 4.46s. 2600ms re-read while the server still had the old value,
+// which is what made a flipped switch appear to snap back. The UI now holds the
+// intent until the server agrees, so this only sets when the control unlocks.
+export const SETTLE_MS = 5200
 // The console should feel live without hammering the disk.
 export const LOG_POLL_MS = 2000
 
