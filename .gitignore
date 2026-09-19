@@ -12,6 +12,7 @@ sorpple_settings.json
 
 # Web dashboard
 listings.json
+.listings.lock
 sorpple_control.json
 sorpple_status.json
 sorpple.log
